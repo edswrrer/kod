@@ -2288,890 +2288,117 @@ HTML_TEMPLATE = r"""
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>YT Guardian v2.0 — @ShmirchikArt</title>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.7.1/jquery.min.js"></script>
+<script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.8.5/d3.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
-:root{
-  --bg:#0d1117;--bg2:#161b22;--bg3:#21262d;--border:#30363d;
-  --text:#c9d1d9;--text2:#8b949e;--accent:#58a6ff;--green:#2ECC71;
-  --yellow:#F1C40F;--orange:#E67E22;--red:#E74C3C;--crimson:#8B0000;
-  --blue:#3498DB;--purple:#9B59B6;
-}
+:root{--bg:#0d1117;--bg2:#161b22;--bg3:#21262d;--border:#30363d;--text:#c9d1d9;--text2:#8b949e;--accent:#58a6ff;--green:#2ECC71;--yellow:#F1C40F;--orange:#E67E22;--red:#E74C3C;--crimson:#8B0000;--blue:#3498DB;--purple:#9B59B6}
 body{background:var(--bg);color:var(--text);font-family:'Segoe UI',sans-serif;font-size:13px}
 #app{display:flex;height:100vh;overflow:hidden}
-#sidebar{width:200px;background:var(--bg2);border-right:1px solid var(--border);
-  display:flex;flex-direction:column;padding:10px 0;flex-shrink:0}
-#sidebar h1{font-size:13px;font-weight:700;color:var(--accent);padding:10px 15px 15px;
-  border-bottom:1px solid var(--border);line-height:1.4}
-.nav-item{padding:9px 15px;cursor:pointer;display:flex;align-items:center;gap:8px;
-  color:var(--text2);transition:.15s}
+#sidebar{width:205px;background:var(--bg2);border-right:1px solid var(--border);display:flex;flex-direction:column;padding:10px 0}
+#sidebar h1{font-size:13px;font-weight:700;color:var(--accent);padding:10px 15px 15px;border-bottom:1px solid var(--border);line-height:1.4}
+.nav-item{padding:9px 15px;cursor:pointer;display:flex;align-items:center;gap:8px;color:var(--text2);transition:.15s}
 .nav-item:hover,.nav-item.active{background:var(--bg3);color:var(--text)}
-.nav-item .icon{font-size:16px;width:20px;text-align:center}
 #main{flex:1;display:flex;flex-direction:column;overflow:hidden}
-#topbar{background:var(--bg2);border-bottom:1px solid var(--border);
-  padding:8px 15px;display:flex;align-items:center;gap:10px;flex-shrink:0}
-#topbar input{background:var(--bg3);border:1px solid var(--border);color:var(--text);
-  padding:6px 12px;border-radius:6px;width:260px;font-size:13px}
-#topbar select{background:var(--bg3);border:1px solid var(--border);color:var(--text);
-  padding:6px 8px;border-radius:6px;font-size:12px}
-.btn{background:var(--accent);color:#000;border:none;padding:6px 14px;
-  border-radius:6px;cursor:pointer;font-size:12px;font-weight:600}
-.btn:hover{opacity:.85}
-.btn-red{background:var(--red);color:#fff}
-.btn-green{background:var(--green);color:#000}
-.btn-outline{background:transparent;border:1px solid var(--border);color:var(--text)}
-#content{flex:1;overflow-y:auto;padding:15px}
-.tab-panel{display:none}.tab-panel.active{display:block}
-
-/* Cards */
-.card{background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:15px;margin-bottom:12px}
-.card h3{font-size:13px;font-weight:600;margin-bottom:10px;color:var(--text)}
-.stat-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:10px}
-.stat-box{background:var(--bg3);border-radius:6px;padding:12px;text-align:center}
-.stat-box .val{font-size:22px;font-weight:700;color:var(--accent)}
-.stat-box .lbl{font-size:11px;color:var(--text2);margin-top:3px}
-
-/* Kullanıcı tablosu */
-.user-table{width:100%;border-collapse:collapse}
-.user-table th{background:var(--bg3);padding:8px 10px;text-align:left;
-  font-size:11px;color:var(--text2);border-bottom:1px solid var(--border)}
-.user-table td{padding:7px 10px;border-bottom:1px solid var(--border);font-size:12px;vertical-align:middle}
-.user-table tr:hover td{background:var(--bg3)}
-.threat-badge{padding:2px 8px;border-radius:20px;font-size:10px;font-weight:700;color:#000}
-.t-GREEN{background:#2ECC71}.t-YELLOW{background:#F1C40F}
-.t-ORANGE{background:#E67E22}.t-RED{background:#E74C3C;color:#fff}
-.t-CRIMSON{background:#8B0000;color:#fff}.t-BLUE{background:#3498DB}
-.t-PURPLE{background:#9B59B6;color:#fff}
-
-/* Mesaj listesi */
-.msg-item{background:var(--bg2);border:1px solid var(--border);border-radius:6px;
-  padding:10px 12px;margin-bottom:8px;position:relative}
-.msg-item .meta{font-size:11px;color:var(--text2);margin-bottom:4px;
-  display:flex;align-items:center;gap:8px}
-.msg-item .text{color:var(--text);line-height:1.5}
-.msg-item .actions{position:absolute;right:10px;top:10px;display:flex;gap:5px}
-.msg-item .actions button{font-size:10px;padding:3px 8px;border-radius:4px}
-.highlight{background:rgba(88,166,255,.15);border-color:var(--accent)}
-
-/* Graph */
+#topbar{background:var(--bg2);border-bottom:1px solid var(--border);padding:8px 15px;display:flex;align-items:center;gap:10px}
+.input,.select{background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:6px 10px;border-radius:6px}
+.input{width:260px}.btn{background:var(--accent);color:#000;border:none;padding:6px 14px;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600}
+.btn:hover{opacity:.85}.btn-red{background:var(--red);color:#fff}.btn-green{background:var(--green);color:#000}.btn-outline{background:transparent;border:1px solid var(--border);color:var(--text)}
+#content{flex:1;overflow-y:auto;padding:15px}.card{background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:15px;margin-bottom:12px}.card h3{font-size:13px;font-weight:600;margin-bottom:10px}
+.stat-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:10px}.stat-box{background:var(--bg3);border-radius:6px;padding:12px;text-align:center}.stat-box .val{font-size:22px;font-weight:700}.stat-box .lbl{font-size:11px;color:var(--text2);margin-top:3px}
+.user-table{width:100%;border-collapse:collapse}.user-table th{background:var(--bg3);padding:8px 10px;text-align:left;font-size:11px;color:var(--text2);border-bottom:1px solid var(--border)}.user-table td{padding:7px 10px;border-bottom:1px solid var(--border);font-size:12px;vertical-align:middle}
+.threat-badge{padding:2px 8px;border-radius:20px;font-size:10px;font-weight:700;color:#000}.t-GREEN{background:#2ECC71}.t-YELLOW{background:#F1C40F}.t-ORANGE{background:#E67E22}.t-RED{background:#E74C3C;color:#fff}.t-CRIMSON{background:#8B0000;color:#fff}.t-BLUE{background:#3498DB}.t-PURPLE{background:#9B59B6;color:#fff}
+.msg-item{background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:10px 12px;margin-bottom:8px}.meta{font-size:11px;color:var(--text2);display:flex;gap:8px;align-items:center;margin-bottom:5px}.text{line-height:1.45}.pagination{display:flex;gap:6px;margin-top:10px}.pagination button{padding:4px 10px;background:var(--bg3);border:1px solid var(--border);color:var(--text);border-radius:4px;cursor:pointer}.pagination .active{background:var(--accent);color:#000}
 #graph-container{width:100%;height:500px;background:var(--bg2);border-radius:8px;border:1px solid var(--border)}
-.graph-node{cursor:pointer}
-.graph-link{stroke:#333;stroke-opacity:.6}
-.node-label{font-size:9px;fill:var(--text2)}
-
-/* Alert stream */
-#alert-stream{max-height:300px;overflow-y:auto}
-.alert-item{padding:8px 10px;border-radius:6px;margin-bottom:6px;font-size:12px;
-  display:flex;align-items:center;gap:8px;border-left:3px solid var(--accent)}
-.alert-RED,.alert-CRIMSON{border-left-color:var(--red);background:rgba(231,76,60,.1)}
-.alert-ORANGE{border-left-color:var(--orange);background:rgba(230,126,34,.1)}
-.alert-YELLOW{border-left-color:var(--yellow);background:rgba(241,196,15,.1)}
-.alert-GREEN{border-left-color:var(--green)}
-
-/* Modal */
-.modal{display:none;position:fixed;top:0;left:0;right:0;bottom:0;
-  background:rgba(0,0,0,.7);z-index:1000;align-items:center;justify-content:center}
-.modal.open{display:flex}
-.modal-box{background:var(--bg2);border:1px solid var(--border);border-radius:10px;
-  padding:20px;width:600px;max-height:80vh;overflow-y:auto;position:relative}
-.modal-box h2{font-size:15px;margin-bottom:15px;color:var(--accent)}
-.modal-close{position:absolute;top:12px;right:15px;cursor:pointer;color:var(--text2);font-size:18px}
-.detail-row{display:flex;gap:8px;margin-bottom:8px;align-items:center;font-size:12px}
-.detail-row label{width:160px;color:var(--text2);flex-shrink:0}
-.progress-bar{height:8px;background:var(--bg3);border-radius:4px;overflow:hidden;flex:1}
-.progress-fill{height:100%;border-radius:4px;transition:.3s}
-
-/* Tabs secondary */
-.subtabs{display:flex;gap:0;border-bottom:1px solid var(--border);margin-bottom:15px}
-.subtab{padding:8px 16px;cursor:pointer;font-size:12px;color:var(--text2);
-  border-bottom:2px solid transparent;margin-bottom:-1px}
-.subtab.active{color:var(--accent);border-bottom-color:var(--accent)}
-
-/* Loader */
-.loader{display:inline-block;width:14px;height:14px;border:2px solid var(--border);
-  border-top-color:var(--accent);border-radius:50%;animation:spin .8s linear infinite}
-@keyframes spin{to{transform:rotate(360deg)}}
-#live-dot{width:8px;height:8px;border-radius:50%;background:var(--green);
-  display:inline-block;animation:pulse 1s ease infinite}
-@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
-.pagination{display:flex;gap:6px;align-items:center;margin-top:12px}
-.pagination button{padding:4px 10px;background:var(--bg3);border:1px solid var(--border);
-  color:var(--text);border-radius:4px;cursor:pointer;font-size:11px}
-.pagination button.active{background:var(--accent);color:#000;border-color:var(--accent)}
+.modal{display:flex;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:1000;align-items:center;justify-content:center}.modal-box{background:var(--bg2);border:1px solid var(--border);border-radius:10px;padding:20px;width:600px;max-height:80vh;overflow-y:auto;position:relative}.modal-close{position:absolute;top:12px;right:15px;cursor:pointer}
 </style>
 </head>
 <body>
 <div id="app">
-<div id="sidebar">
-  <h1>🛡️ YT Guardian<br><span style="color:var(--text2);font-weight:400">@ShmirchikArt</span></h1>
-  <div class="nav-item active" onclick="showTab('dashboard', this)"><span class="icon">📊</span>Dashboard</div>
-  <div class="nav-item" onclick="showTab('users', this)"><span class="icon">👥</span>Kullanıcılar</div>
-  <div class="nav-item" onclick="showTab('messages', this)"><span class="icon">💬</span>Mesajlar</div>
-  <div class="nav-item" onclick="showTab('graph', this)"><span class="icon">🔗</span>İlişki Ağı</div>
-  <div class="nav-item" onclick="showTab('live', this)"><span class="icon">⚡</span>Canlı Yayın</div>
-  <div class="nav-item" onclick="showTab('search', this)"><span class="icon">🔍</span>Arama</div>
-  <div class="nav-item" onclick="showTab('stats', this)"><span class="icon">📈</span>İstatistikler</div>
-  <div class="nav-item" onclick="showTab('dataset', this)"><span class="icon">🗃️</span>Dataset</div>
-  <div class="nav-item" onclick="showTab('settings', this)"><span class="icon">⚙️</span>Ayarlar</div>
-</div>
-<div id="main">
-  <div id="topbar">
-    <input type="text" id="global-search" placeholder="🔍 Kullanıcı adı veya mesaj ara..." oninput="globalSearch(this.value)">
-    <select id="search-mode">
-      <option value="text">Metin</option>
-      <option value="user">Kullanıcı</option>
-      <option value="semantic">Semantik</option>
-    </select>
-    <div style="margin-left:auto;display:flex;align-items:center;gap:8px">
-      <span id="live-indicator" style="display:none"><span id="live-dot"></span> Canlı</span>
-      <span id="status-msg" style="color:var(--text2);font-size:11px"></span>
-      <button class="btn" onclick="startScrape()">▶ Tara</button>
+  <div id="sidebar">
+    <h1>🛡️ YT Guardian<br><span style="color:var(--text2);font-weight:400">@ShmirchikArt</span></h1>
+    <div v-for="item in navItems" :key="item.key" class="nav-item" :class="{active: activeTab===item.key}" @click="changeTab(item.key)"><span>{{ item.icon }}</span>{{ item.label }}</div>
+  </div>
+  <div id="main">
+    <div id="topbar">
+      <input class="input" v-model="globalSearchQ" placeholder="🔍 Kullanıcı adı veya mesaj ara..." @input="runGlobalSearch">
+      <select class="select" v-model="globalSearchMode"><option value="text">Metin</option><option value="user">Kullanıcı</option><option value="semantic">Semantik</option></select>
+      <div style="margin-left:auto;display:flex;align-items:center;gap:8px"><span v-if="liveRunning" style="color:var(--green)">● Canlı</span><span style="color:var(--text2)">{{ statusMsg }}</span><button class="btn" @click="startScrape">▶ Tara</button></div>
+    </div>
+    <div id="content">
+      <template v-if="activeTab==='dashboard'">
+        <div class="stat-grid"><div class="stat-box" v-for="s in statCards" :key="s.key"><div class="val" :style="{color:s.color||'var(--accent)'}">{{ dashboard[s.key] ?? 0 }}</div><div class="lbl">{{ s.label }}</div></div></div>
+        <div class="card" style="margin-top:12px"><h3>Son Uyarılar <button class="btn btn-outline" style="float:right;font-size:10px" @click="alerts=[]">Temizle</button></h3><div v-if="alerts.length===0" style="color:var(--text2)">Uyarı yok</div><div v-for="a in alerts" :key="a.id" class="msg-item"><div class="meta"><span class="threat-badge" :class="'t-'+(a.threat_level||'GREEN')">{{ a.threat_level }}</span><strong>@{{ a.author }}</strong><span>{{ fmtTs(a.timestamp) }}</span></div><div class="text">{{ a.message }}</div></div></div>
+        <div class="card"><h3>Tehdit Dağılımı</h3><canvas id="threat-chart" height="90"></canvas></div>
+      </template>
+
+      <template v-else-if="activeTab==='users'">
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px"><input class="input" v-model="userFilter" placeholder="Kullanıcı ara..." style="width:200px"><select class="select" v-model="threatFilter"><option value="">Tüm Seviyeler</option><option v-for="lvl in ['CRIMSON','RED','ORANGE','YELLOW','GREEN']" :key="lvl" :value="lvl">{{ lvl }}</option></select><button class="btn" @click="analyzeAllUsers">⚡ Tüm Analiz</button><button class="btn" @click="runClustering">🕸️ Kümeleme</button><span style="margin-left:auto;color:var(--text2)">{{ filteredUsers.length }} kullanıcı</span></div>
+        <table class="user-table"><thead><tr><th>Kullanıcı</th><th>Mesaj</th><th>Tehdit</th><th>Bot%</th><th>Nefret%</th><th>Stalker%</th><th>HMM</th><th>Durum</th></tr></thead><tbody><tr v-for="u in pagedUsers" :key="u.author"><td><a href="#" @click.prevent="showUser(u.author)" style="color:var(--accent)">@{{ u.author }}</a></td><td>{{ u.msg_count||0 }}</td><td><span class="threat-badge" :class="'t-'+(u.threat_level||'GREEN')">{{ u.threat_level||'GREEN' }}</span></td><td>{{ pct(u.bot_prob) }}</td><td>{{ pct(u.hate_prob) }}</td><td>{{ pct(u.stalker_score) }}</td><td>{{ u.hmm_state || '-' }}</td><td>{{ u.status || '-' }}</td></tr></tbody></table>
+        <div class="pagination"><button v-for="p in totalUserPages" :key="p" :class="{active:userPage===p}" @click="userPage=p">{{ p }}</button></div>
+      </template>
+
+      <template v-else-if="activeTab==='messages'">
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px"><input class="input" v-model="msgQuery" placeholder="Mesaj ara" style="flex:1;min-width:220px" @input="loadMessages(1)"><input class="input" v-model="msgAuthor" placeholder="Kullanıcı" style="width:180px" @input="loadMessages(1)"><select class="select" v-model="msgSource" @change="loadMessages(1)"><option value="">Tüm Kaynaklar</option><option value="comment">Yorum</option><option value="replay_chat">Replay Chat</option><option value="live">Canlı</option></select><button class="btn btn-outline" @click="loadDeleteCandidates">🧪 Silme Adayları</button></div>
+        <div v-if="deleteCandidates.length" class="card"><h3>Silme Adayları</h3><div v-for="c in deleteCandidates" :key="c.id||c.message" class="msg-item"><div class="meta"><span class="threat-badge" :class="'t-'+(c.threat_level||'RED')">{{ c.threat_level||'RED' }}</span><span>@{{ c.author }}</span></div><div class="text">{{ c.message }}</div></div></div>
+        <div v-for="m in messages" :key="m.id||m.timestamp+m.author" class="msg-item"><div class="meta"><span style="color:var(--accent)">@{{ m.author }}</span><span>{{ m.video_id }}</span><span class="threat-badge" :class="'t-'+(m.threat_level||'GREEN')">{{ m.threat_level||'GREEN' }}</span><span>{{ fmtTs(m.timestamp) }}</span></div><div class="text">{{ m.message }}</div></div>
+        <div class="pagination"><button v-for="p in totalMsgPages" :key="p" :class="{active:msgPage===p}" @click="loadMessages(p)">{{ p }}</button></div>
+      </template>
+
+      <template v-else-if="activeTab==='graph'"><div style="display:flex;gap:8px;margin-bottom:10px"><button class="btn" @click="loadGraph">🔄 Grafiği Yükle</button><button class="btn btn-outline" @click="runClustering">⚙️ Kümeleri Yenile</button></div><div id="graph-container"></div></template>
+
+      <template v-else-if="activeTab==='live'"><div class="card"><h3>Canlı Yayın Monitörü</h3><div style="display:flex;gap:8px"><input class="input" v-model="liveVideoId" placeholder="Video ID (11 karakter)"><button class="btn btn-green" @click="startLive">▶ Başlat</button><button class="btn btn-red" @click="stopLive">⏹ Durdur</button></div><div style="margin-top:10px"><div v-for="a in liveMessages" :key="a.timestamp+a.author" class="msg-item"><div class="meta"><span class="threat-badge" :class="'t-'+(a.threat_level||'GREEN')">{{ a.threat_level }}</span><span>@{{ a.author }}</span></div><div class="text">{{ a.message }}</div></div></div></div></template>
+
+      <template v-else-if="activeTab==='search'"><div class="card"><h3>Gelişmiş Arama</h3><div style="display:flex;gap:8px;flex-wrap:wrap"><input class="input" v-model="advQuery" style="flex:1" placeholder="Arama terimi..."><select class="select" v-model="advMode"><option value="text">Tam Metin (FTS5)</option><option value="user">Kullanıcı</option><option value="semantic">Semantik Benzerlik</option><option value="pattern">N-gram Pattern</option></select><button class="btn" @click="advancedSearch">🔍 Ara</button></div><div style="margin-top:10px"><div v-for="u in searchResults.users||[]" :key="u.author" class="msg-item"><div class="meta"><a href="#" @click.prevent="showUser(u.author)" style="color:var(--accent)">@{{ u.author }}</a><span class="threat-badge" :class="'t-'+(u.threat_level||'GREEN')">{{ u.threat_level }}</span></div></div><div v-for="m in searchResults.messages||[]" :key="m.author+m.timestamp" class="msg-item"><div class="meta"><span>@{{ m.author }}</span></div><div class="text">{{ m.message }}</div></div></div></div></template>
+
+      <template v-else-if="activeTab==='stats'"><div class="card"><h3>Zaman Serisi — Tehdit Skorları</h3><canvas id="timeline-chart" height="120"></canvas></div><div class="card"><h3>Kimlik Eşleşmeleri</h3><div v-for="l in identityLinks" :key="l.user_a+l.user_b" class="msg-item"><div class="meta"><span>{{ l.user_a }}</span><span>⟷</span><span>{{ l.user_b }}</span><span>{{ pct(l.sim_score) }}</span></div></div></div><div class="card"><h3>Oyun Kuramı — Nash Dengesi</h3><div v-for="e in equilibria" :key="e.join('-')" class="msg-item"><div class="text">{{ e[2] }} / {{ e[3] }} — Payoff: {{ e[0] }} / {{ e[1] }}</div></div></div></template>
+
+      <template v-else-if="activeTab==='dataset'"><div style="display:flex;gap:8px;margin-bottom:10px"><button class="btn" @click="loadPendingDataset">⏳ Onay Bekleyenleri Yükle</button><button class="btn btn-red" @click="retrainModel">🔄 Modeli Yeniden Eğit</button></div><div v-for="item in datasetItems" :key="item.id" class="msg-item"><div class="meta"><strong>@{{ item.author }}</strong><span class="threat-badge" :class="'t-'+(item.label||'GREEN')">{{ item.label }}</span></div><div class="text">{{ item.message }}</div><div style="margin-top:8px;display:flex;gap:5px"><button class="btn btn-green" @click="approveDataset(item.id,null)">✓</button><select class="select" v-model="item._label" style="padding:3px 6px"><option>ANTISEMITE</option><option>GROYPER</option><option>HATER</option><option>BOT</option><option>STALKER</option><option>NORMAL</option></select><button class="btn btn-outline" @click="approveDataset(item.id,item._label)">✓ Etiketle</button></div></div></template>
+
+      <template v-else-if="activeTab==='settings'"><div class="card"><h3>Sistem Durumu</h3><div v-for="(v,k) in systemStatus" :key="k" class="msg-item"><div class="meta"><span>{{ k }}</span><span>{{ v }}</span></div></div></div><div class="card"><h3>YouTube Giriş</h3><div style="display:flex;flex-direction:column;gap:8px;max-width:360px"><input class="input" v-model="ytEmail" placeholder="E-posta" style="width:100%"><input class="input" v-model="ytPass" type="password" placeholder="Şifre" style="width:100%"><button class="btn" @click="ytLogin">🔑 Giriş Yap</button><span :style="{color:loginOk?'var(--green)':'var(--red)'}">{{ loginStatus }}</span></div></div></template>
     </div>
   </div>
-  <div id="content">
-    <!-- DASHBOARD -->
-    <div id="tab-dashboard" class="tab-panel active">
-      <div class="stat-grid" id="stats-grid">
-        <div class="stat-box"><div class="val" id="stat-total">—</div><div class="lbl">Toplam Mesaj</div></div>
-        <div class="stat-box"><div class="val" id="stat-users">—</div><div class="lbl">Kullanıcı</div></div>
-        <div class="stat-box"><div class="val" id="stat-crimson" style="color:var(--crimson)">—</div><div class="lbl">CRIMSON</div></div>
-        <div class="stat-box"><div class="val" id="stat-red" style="color:var(--red)">—</div><div class="lbl">RED/HATER</div></div>
-        <div class="stat-box"><div class="val" id="stat-orange" style="color:var(--orange)">—</div><div class="lbl">ORANGE</div></div>
-        <div class="stat-box"><div class="val" id="stat-bots" style="color:var(--blue)">—</div><div class="lbl">BOT</div></div>
-        <div class="stat-box"><div class="val" id="stat-stalkers" style="color:var(--purple)">—</div><div class="lbl">STALKER</div></div>
-        <div class="stat-box"><div class="val" id="stat-videos">—</div><div class="lbl">Video</div></div>
-      </div>
-      <div class="card" style="margin-top:15px">
-        <h3>Son Uyarılar <button class="btn btn-outline" style="float:right;font-size:10px" onclick="clearAlerts()">Temizle</button></h3>
-        <div id="alert-stream"></div>
-      </div>
-      <div class="card">
-        <h3>Tehdit Dağılımı</h3>
-        <canvas id="threat-chart" height="100"></canvas>
-      </div>
-    </div>
 
-    <!-- KULLANICILAR -->
-    <div id="tab-users" class="tab-panel">
-      <div style="display:flex;gap:8px;margin-bottom:12px;align-items:center;flex-wrap:wrap">
-        <input type="text" id="user-filter" placeholder="Kullanıcı ara..." oninput="filterUsers()" style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:6px 10px;border-radius:6px;width:200px">
-        <select id="threat-filter" onchange="filterUsers()" style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:6px 8px;border-radius:6px">
-          <option value="">Tüm Seviyeler</option>
-          <option value="CRIMSON">CRIMSON</option>
-          <option value="RED">RED</option>
-          <option value="ORANGE">ORANGE</option>
-          <option value="YELLOW">YELLOW</option>
-          <option value="GREEN">GREEN</option>
-        </select>
-        <button class="btn" onclick="analyzeAllUsers()">⚡ Tüm Analiz</button>
-        <button class="btn" onclick="runClustering()">🕸️ Kümeleme</button>
-        <span id="users-count" style="color:var(--text2);font-size:11px;margin-left:auto"></span>
-      </div>
-      <div id="users-table-container">
-        <table class="user-table">
-          <thead><tr>
-            <th>Kullanıcı</th><th>Mesaj</th><th>Tehdit</th><th>Bot%</th>
-            <th>Nefret%</th><th>Stalker%</th><th>HMM</th><th>Durum</th><th>İşlem</th>
-          </tr></thead>
-          <tbody id="users-tbody"></tbody>
-        </table>
-        <div class="pagination" id="users-pagination"></div>
-      </div>
-    </div>
-
-    <!-- MESAJLAR -->
-    <div id="tab-messages" class="tab-panel">
-      <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;align-items:center">
-        <input type="text" id="msg-filter" placeholder="Mesajlarda ara (Ajax)..." oninput="searchMessages(this.value)" style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:6px 10px;border-radius:6px;flex:1;min-width:200px">
-        <input type="text" id="msg-author" placeholder="Kullanıcı adı..." oninput="searchMessages()" style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:6px 10px;border-radius:6px;width:160px">
-        <select id="msg-source" onchange="searchMessages()" style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:6px 8px;border-radius:6px">
-          <option value="">Tüm Kaynaklar</option>
-          <option value="comment">Yorum</option>
-          <option value="replay_chat">Replay Chat</option>
-          <option value="live">Canlı</option>
-        </select>
-        <button class="btn btn-outline" onclick="loadDeleteCandidates()">🧪 Silme Adayları</button>
-        <span id="msg-count" style="color:var(--text2);font-size:11px"></span>
-      </div>
-      <div class="card" id="delete-candidates-card" style="display:none">
-        <h3>Silme İnceleme Kuyruğu</h3>
-        <div id="delete-candidates-list"></div>
-      </div>
-      <div id="messages-list"></div>
-      <div class="pagination" id="messages-pagination"></div>
-    </div>
-
-    <!-- GRAF -->
-    <div id="tab-graph" class="tab-panel">
-      <div style="display:flex;gap:8px;margin-bottom:12px">
-        <button class="btn" onclick="loadGraph()">🔄 Grafiği Yükle</button>
-        <button class="btn btn-outline" onclick="runClustering()">⚙️ Kümeleri Yenile</button>
-        <select id="graph-algo" style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:6px 8px;border-radius:6px">
-          <option value="louvain">Louvain</option>
-          <option value="dbscan">DBSCAN</option>
-        </select>
-      </div>
-      <div id="graph-container"></div>
-      <div class="card" style="margin-top:12px">
-        <h3>Küme Listesi</h3>
-        <div id="cluster-list"></div>
-      </div>
-    </div>
-
-    <!-- CANLI YAYIN -->
-    <div id="tab-live" class="tab-panel">
-      <div class="card">
-        <h3>Canlı Yayın Monitörü</h3>
-        <div style="display:flex;gap:8px;align-items:center;margin-bottom:12px;flex-wrap:wrap">
-          <input type="text" id="live-video-id" placeholder="Video ID (11 karakter)" style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:6px 10px;border-radius:6px;width:200px">
-          <button class="btn btn-green" onclick="startLiveMonitor()">▶ Başlat</button>
-          <button class="btn btn-red" onclick="stopLiveMonitor()">⏹ Durdur</button>
-        </div>
-        <div id="live-messages" style="max-height:400px;overflow-y:auto"></div>
-      </div>
-    </div>
-
-    <!-- ARAMA -->
-    <div id="tab-search" class="tab-panel">
-      <div class="card">
-        <h3>Gelişmiş Arama</h3>
-        <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap">
-          <input type="text" id="adv-search" placeholder="Arama terimi..." style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:8px 12px;border-radius:6px;flex:1">
-          <select id="adv-mode" style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:8px;border-radius:6px">
-            <option value="text">Tam Metin (FTS5)</option>
-            <option value="user">Kullanıcı</option>
-            <option value="semantic">Semantik Benzerlik</option>
-            <option value="pattern">N-gram Pattern</option>
-          </select>
-          <button class="btn" onclick="advancedSearch()">🔍 Ara</button>
-        </div>
-        <div id="search-results"></div>
-      </div>
-    </div>
-
-    <!-- İSTATİSTİKLER -->
-    <div id="tab-stats" class="tab-panel">
-      <div class="card">
-        <h3>Zaman Serisi — Tehdit Skorları</h3>
-        <canvas id="timeline-chart" height="120"></canvas>
-      </div>
-      <div class="card">
-        <h3>Kimlik Eşleşmeleri</h3>
-        <div id="identity-links-list"></div>
-      </div>
-      <div class="card">
-        <h3>Oyun Kuramı — Nash Dengesi</h3>
-        <div id="nash-table"></div>
-      </div>
-    </div>
-
-    <!-- DATASET -->
-    <div id="tab-dataset" class="tab-panel">
-      <div style="display:flex;gap:8px;margin-bottom:12px">
-        <button class="btn" onclick="loadPendingDataset()">⏳ Onay Bekleyenleri Yükle</button>
-        <button class="btn btn-red" onclick="retrainModel()">🔄 Modeli Yeniden Eğit</button>
-      </div>
-      <div id="dataset-items"></div>
-    </div>
-
-    <!-- AYARLAR -->
-    <div id="tab-settings" class="tab-panel">
-      <div class="card">
-        <h3>Sistem Durumu</h3>
-        <div id="system-status"></div>
-      </div>
-      <div class="card">
-        <h3>YouTube Giriş</h3>
-        <div style="display:flex;flex-direction:column;gap:8px;max-width:350px">
-          <input type="text" id="yt-email" placeholder="E-posta" style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:8px;border-radius:6px">
-          <input type="password" id="yt-pass" placeholder="Şifre" style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:8px;border-radius:6px">
-          <button class="btn" onclick="ytLogin()">🔑 Giriş Yap</button>
-          <div id="login-status" style="font-size:12px;color:var(--text2)"></div>
-        </div>
-      </div>
-      <div class="card">
-        <h3>Analiz Eşikleri</h3>
-        <div id="thresholds-form"></div>
-      </div>
-    </div>
-  </div>
-</div>
-</div>
-
-<!-- Kullanıcı Detay Modal -->
-<div class="modal" id="user-modal">
-  <div class="modal-box">
-    <span class="modal-close" onclick="closeModal()">✕</span>
-    <h2 id="modal-title">Kullanıcı Detayı</h2>
-    <div id="modal-content"></div>
-  </div>
+  <div v-if="modalOpen" class="modal" @click.self="modalOpen=false"><div class="modal-box"><span class="modal-close" @click="modalOpen=false">✕</span><h2>@{{ modalUser?.author || modalUser?.name || 'Kullanıcı' }}</h2><pre style="white-space:pre-wrap">{{ JSON.stringify(modalUser, null, 2) }}</pre></div></div>
 </div>
 
 <script>
-const socket = io('/ws');
-let allUsers = [], currentPage = 1, pageSize = 50;
-let msgPage = 1, totalMsgs = 0;
-let graphData = null, threatChart = null, timelineChart = null;
-let currentLiveVideoId = '';
-
-// ─── NAVİGASYON ─────────────────────────────────────────────────────────────
-function showTab(name, navEl=null) {
-  document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
-  document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
-  document.getElementById('tab-'+name).classList.add('active');
-  if(navEl) {
-    navEl.classList.add('active');
-  } else {
-    const nav = document.querySelector(`.nav-item[onclick*="showTab('${name}'"]`);
-    if(nav) nav.classList.add('active');
+const { createApp } = Vue;
+createApp({
+  data(){return {navItems:[{key:'dashboard',label:'Dashboard',icon:'📊'},{key:'users',label:'Kullanıcılar',icon:'👥'},{key:'messages',label:'Mesajlar',icon:'💬'},{key:'graph',label:'İlişki Ağı',icon:'🔗'},{key:'live',label:'Canlı Yayın',icon:'⚡'},{key:'search',label:'Arama',icon:'🔍'},{key:'stats',label:'İstatistikler',icon:'📈'},{key:'dataset',label:'Dataset',icon:'🗃️'},{key:'settings',label:'Ayarlar',icon:'⚙️'}],activeTab:'dashboard',statusMsg:'Hazır',globalSearchQ:'',globalSearchMode:'text',dashboard:{},alerts:[],statCards:[{key:'total_messages',label:'Toplam Mesaj'},{key:'total_users',label:'Kullanıcı'},{key:'crimson',label:'CRIMSON',color:'var(--crimson)'},{key:'red',label:'RED/HATER',color:'var(--red)'},{key:'orange',label:'ORANGE',color:'var(--orange)'},{key:'bots',label:'BOT',color:'var(--blue)'},{key:'stalkers',label:'STALKER',color:'var(--purple)'},{key:'videos',label:'Video'}],allUsers:[],userFilter:'',threatFilter:'',userPage:1,pageSize:25,messages:[],msgPage:1,totalMsgs:0,msgQuery:'',msgAuthor:'',msgSource:'',deleteCandidates:[],graphData:null,liveVideoId:'',liveMessages:[],liveRunning:false,advQuery:'',advMode:'text',searchResults:{},identityLinks:[],equilibria:[],datasetItems:[],systemStatus:{},ytEmail:'',ytPass:'',loginStatus:'',loginOk:false,modalOpen:false,modalUser:null,socket:null,threatChart:null,timelineChart:null};},
+  computed:{filteredUsers(){return this.allUsers.filter(u=>{const f=this.userFilter.toLowerCase();const ok=!f||String(u.author||'').toLowerCase().includes(f);const t=!this.threatFilter||u.threat_level===this.threatFilter;return ok&&t;});},totalUserPages(){return Math.max(1,Math.ceil(this.filteredUsers.length/this.pageSize));},pagedUsers(){const s=(this.userPage-1)*this.pageSize;return this.filteredUsers.slice(s,s+this.pageSize);},totalMsgPages(){return Math.max(1,Math.ceil(this.totalMsgs/this.pageSize));}},
+  mounted(){this.socket=io('/ws');this.bindSocket();this.loadDashboard();},
+  methods:{
+    async api(path,params={},method='GET'){const opts={method,headers:{'Content-Type':'application/json'}};let url=path;if(method==='GET'){url += '?' + new URLSearchParams(params).toString();} else {opts.body=JSON.stringify(params);} const res=await fetch(url,opts); if(!res.ok) throw new Error((await res.json()).error || 'API hatası'); return res.json();},
+    pct(v){return `${Math.round((v||0)*100)}%`;}, fmtTs(ts){if(!ts) return ''; return new Date(ts*1000).toLocaleString();},
+    async changeTab(tab){this.activeTab=tab; if(tab==='dashboard') await this.loadDashboard(); if(tab==='users') await this.loadUsers(); if(tab==='messages') await this.loadMessages(1); if(tab==='graph') await this.loadGraph(); if(tab==='stats') await this.loadStats(); if(tab==='settings') await this.loadStatus(); if(tab==='dataset') await this.loadPendingDataset();},
+    async loadDashboard(){const d=await this.api('/api/stats'); this.dashboard=d; this.renderThreatChart();},
+    renderThreatChart(){const c=document.getElementById('threat-chart'); if(!c) return; if(this.threatChart) this.threatChart.destroy(); this.threatChart=new Chart(c,{type:'bar',data:{labels:['CRIMSON','RED','ORANGE','YELLOW','GREEN'],datasets:[{data:[this.dashboard.crimson||0,this.dashboard.red||0,this.dashboard.orange||0,this.dashboard.yellow||0,this.dashboard.green||0],backgroundColor:['#8B0000','#E74C3C','#E67E22','#F1C40F','#2ECC71']}]},options:{plugins:{legend:{display:false}}}});},
+    async loadUsers(){const d=await this.api('/api/users',{page:1,size:10000}); this.allUsers=d.users||[];},
+    async showUser(author){const d=await this.api('/api/user/'+encodeURIComponent(author)); this.modalUser=d; this.modalOpen=true;},
+    async analyzeAllUsers(){await this.api('/api/analyze/all',{},'POST'); this.statusMsg='✅ Tüm analiz tetiklendi';},
+    async runClustering(){await this.api('/api/cluster',{},'POST'); this.statusMsg='✅ Kümeleme tamamlandı'; if(this.activeTab==='graph') this.loadGraph();},
+    async loadMessages(page){this.msgPage=page; const d=await this.api('/api/messages',{page:this.msgPage,size:this.pageSize,q:this.msgQuery,author:this.msgAuthor,source:this.msgSource}); this.messages=d.messages||[]; this.totalMsgs=d.total||0;},
+    async loadDeleteCandidates(){const d=await this.api('/api/review/delete-candidates',{limit:200}); this.deleteCandidates=d.candidates||[];},
+    async loadGraph(){const d=await this.api('/api/graph'); this.graphData=d.graph_data; this.renderGraph();},
+    renderGraph(){const data=this.graphData; const container=document.getElementById('graph-container'); if(!container) return; container.innerHTML=''; if(!data||!data.nodes?.length){container.innerHTML='<p style="padding:15px;color:var(--text2)">Veri yok.</p>'; return;} const W=container.clientWidth||800,H=500; const svg=d3.select(container).append('svg').attr('width',W).attr('height',H); const g=svg.append('g'); const sim=d3.forceSimulation(data.nodes).force('link',d3.forceLink(data.links).id(d=>d.id).distance(85)).force('charge',d3.forceManyBody().strength(-180)).force('center',d3.forceCenter(W/2,H/2)); const link=g.selectAll('line').data(data.links).enter().append('line').attr('stroke','#444'); const node=g.selectAll('circle').data(data.nodes).enter().append('circle').attr('r',6).attr('fill','#58a6ff').on('click',(_,d)=>this.showUser(d.id)); const label=g.selectAll('text').data(data.nodes).enter().append('text').text(d=>d.id).attr('font-size',9).attr('fill','#8b949e').attr('dy',15); sim.on('tick',()=>{link.attr('x1',d=>d.source.x).attr('y1',d=>d.source.y).attr('x2',d=>d.target.x).attr('y2',d=>d.target.y); node.attr('cx',d=>d.x).attr('cy',d=>d.y); label.attr('x',d=>d.x).attr('y',d=>d.y);});},
+    async startLive(){if((this.liveVideoId||'').length!==11){alert('Geçerli bir Video ID girin'); return;} await this.api('/api/live/start',{video_id:this.liveVideoId},'POST'); this.liveRunning=true; this.statusMsg='⚡ Canlı monitör başlatıldı';},
+    async stopLive(){await this.api('/api/live/stop',{},'POST'); this.liveRunning=false; this.statusMsg='Canlı monitör durduruldu';},
+    async runGlobalSearch(){if((this.globalSearchQ||'').length<2) return; this.searchResults=await this.api('/api/search',{q:this.globalSearchQ,mode:this.globalSearchMode});},
+    async advancedSearch(){if(!this.advQuery) return; this.searchResults=await this.api('/api/search',{q:this.advQuery,mode:this.advMode});},
+    async loadStats(){const links=await this.api('/api/identity-links'); this.identityLinks=(links.links||[]).slice(0,50); const nash=await this.api('/api/nash'); this.equilibria=nash.equilibria||[]; this.renderTimelineChart();},
+    renderTimelineChart(){const c=document.getElementById('timeline-chart'); if(!c) return; if(this.timelineChart) this.timelineChart.destroy(); this.timelineChart=new Chart(c,{type:'line',data:{labels:this.identityLinks.map((_,i)=>String(i+1)),datasets:[{label:'Benzerlik',data:this.identityLinks.map(i=>i.sim_score||0),borderColor:'#58a6ff'}]},options:{plugins:{legend:{display:false}}}});},
+    async loadPendingDataset(){const d=await this.api('/api/dataset/pending'); this.datasetItems=(d.items||[]).map(x=>({...x,_label:'NORMAL'}));},
+    async approveDataset(id,label){await this.api('/api/dataset/approve',label?{id,label}:{id},'POST'); this.statusMsg='✅ Dataset onayı tamamlandı'; this.loadPendingDataset();},
+    async retrainModel(){const d=await this.api('/api/retrain',{},'POST'); this.statusMsg=d.success?`✅ Eğitim tamamlandı — F1: ${d.f1}`:`❌ ${d.error}`;},
+    async loadStatus(){this.systemStatus=await this.api('/api/status');},
+    async ytLogin(){const d=await this.api('/api/yt/login',{email:this.ytEmail,password:this.ytPass},'POST'); this.loginOk=!!d.success; this.loginStatus=d.message || (d.success?'✅ Giriş başarılı':'❌ Giriş başarısız');},
+    async startScrape(){await this.api('/api/scrape',{},'POST'); this.statusMsg='🧹 Tarama arka planda çalışıyor...';},
+    bindSocket(){this.socket.on('connected',()=>this.statusMsg='WebSocket bağlı'); this.socket.on('live_alert',(data)=>{this.liveMessages.unshift(data); this.alerts.unshift({...data,id:crypto.randomUUID()}); this.alerts=this.alerts.slice(0,50);}); this.socket.on('scrape_progress',(d)=>this.statusMsg=`Tarama sürüyor — +${d.new_messages||0} mesaj`); this.socket.on('scrape_done',(d)=>{this.statusMsg=`✅ Tarama tamamlandı — ${d.total_messages||0} mesaj`; this.loadDashboard();}); this.socket.on('login_result',(d)=>{this.loginOk=!!d.success; this.loginStatus=this.loginOk?'✅ Giriş başarılı':'❌ Giriş başarısız';});}
   }
-  if(name==='dashboard') loadDashboard();
-  else if(name==='users') loadUsers();
-  else if(name==='messages') loadMessages();
-  else if(name==='graph') loadGraph();
-  else if(name==='stats') loadStats();
-  else if(name==='settings') loadStatus();
-}
-
-// ─── DASHBOARD ──────────────────────────────────────────────────────────────
-function loadDashboard() {
-  $.get('/api/stats', function(d) {
-    $('#stat-total').text(d.total_messages || 0);
-    $('#stat-users').text(d.total_users || 0);
-    $('#stat-crimson').text(d.crimson || 0);
-    $('#stat-red').text(d.red || 0);
-    $('#stat-orange').text(d.orange || 0);
-    $('#stat-bots').text(d.bots || 0);
-    $('#stat-stalkers').text(d.stalkers || 0);
-    $('#stat-videos').text(d.videos || 0);
-    renderThreatChart(d);
-  });
-}
-
-function renderThreatChart(d) {
-  const ctx = document.getElementById('threat-chart').getContext('2d');
-  if(threatChart) threatChart.destroy();
-  threatChart = new Chart(ctx, {
-    type:'doughnut',
-    data:{
-      labels:['CRIMSON','RED','ORANGE','YELLOW','GREEN'],
-      datasets:[{data:[d.crimson||0,d.red||0,d.orange||0,d.yellow||0,d.green||0],
-        backgroundColor:['#8B0000','#E74C3C','#E67E22','#F1C40F','#2ECC71']}]
-    },
-    options:{plugins:{legend:{labels:{color:'#c9d1d9',boxWidth:12}}},cutout:'70%'}
-  });
-}
-
-function addAlert(data) {
-  const d = new Date(data.timestamp*1000).toLocaleTimeString();
-  const color = data.threat_level;
-  const html = `<div class="alert-item alert-${color}">
-    <span style="background:${data.threat_color};color:#000;padding:1px 6px;border-radius:3px;font-size:10px;font-weight:700">${color}</span>
-    <strong>@${data.author}</strong>
-    <span style="color:var(--text2)">${d}</span>
-    <span>${(data.message||'').substring(0,80)}</span>
-    ${data.msg_id ? `<button class="btn btn-red" style="margin-left:auto;font-size:10px;padding:2px 6px" onclick="deleteMsg('${data.video_id}','${data.author}','${(data.message||'').substring(0,30).replace(/'/g,'\\'')}')">Sil</button>` : ''}
-  </div>`;
-  $('#alert-stream').prepend(html);
-  const items = $('#alert-stream .alert-item');
-  if(items.length > 50) items.last().remove();
-}
-
-function clearAlerts() { $('#alert-stream').empty(); }
-
-// ─── KULLANICILAR ────────────────────────────────────────────────────────────
-function loadUsers(page) {
-  if(page) currentPage = page;
-  $.get('/api/users', {page: currentPage, size: pageSize,
-                        filter: $('#user-filter').val(),
-                        threat: $('#threat-filter').val()}, function(d) {
-    allUsers = d.users || [];
-    $('#users-count').text(d.total + ' kullanıcı');
-    renderUsersTable(allUsers);
-    renderPagination('users', d.total, currentPage);
-  });
-}
-
-function filterUsers() { currentPage = 1; loadUsers(); }
-
-function renderUsersTable(users) {
-  let html = '';
-  users.forEach(u => {
-    const ts = (u.threat_score*100).toFixed(0);
-    const actionColor = u.threat_level==='GREEN'?'var(--green)':u.threat_level==='YELLOW'?'var(--yellow)':'var(--red)';
-    html += `<tr>
-      <td><a href="#" onclick="showUserDetail('${u.author}')" style="color:var(--accent)">${u.author}</a>
-          ${u.is_new_account?'<span style="font-size:9px;background:var(--purple);color:#fff;padding:1px 4px;border-radius:3px;margin-left:4px">YENİ</span>':''}
-      </td>
-      <td>${u.msg_count||0}</td>
-      <td><span class="threat-badge t-${u.threat_level}">${u.threat_level}</span></td>
-      <td style="color:var(--blue)">${((u.bot_prob||0)*100).toFixed(0)}%</td>
-      <td style="color:var(--red)">${((u.hate_score||0)*100).toFixed(0)}%</td>
-      <td style="color:var(--purple)">${((u.stalker_score||0)*100).toFixed(0)}%</td>
-      <td style="color:var(--text2);font-size:11px">${u.hmm_state||'NORMAL'}</td>
-      <td><div style="width:60px;height:6px;background:var(--bg3);border-radius:3px;overflow:hidden"><div style="width:${ts}%;height:100%;background:${COLOR_MAP_JS[u.threat_level]||'#2ECC71'}"></div></div></td>
-      <td style="display:flex;gap:4px">
-        <button class="btn" style="font-size:10px;padding:3px 7px" onclick="analyzeUser('${u.author}')">⚡</button>
-        <button class="btn btn-red" style="font-size:10px;padding:3px 7px" onclick="banUser('${u.author}')">🚫</button>
-      </td>
-    </tr>`;
-  });
-  $('#users-tbody').html(html);
-}
-
-const COLOR_MAP_JS = {GREEN:'#2ECC71',YELLOW:'#F1C40F',ORANGE:'#E67E22',RED:'#E74C3C',CRIMSON:'#8B0000',BLUE:'#3498DB',PURPLE:'#9B59B6'};
-
-function renderPagination(id, total, page) {
-  const pages = Math.ceil(total / pageSize);
-  let html = '';
-  for(let p=1; p<=Math.min(pages,15); p++) {
-    html += `<button ${p===page?'class="active"':''} onclick="${id==='users'?'loadUsers':'loadMessages'}(${p})">${p}</button>`;
-  }
-  $(`#${id}-pagination`).html(html);
-}
-
-function showUserDetail(author) {
-  $('#modal-title').text('@'+author);
-  $('#modal-content').html('<div class="loader"></div> Yükleniyor...');
-  $('#user-modal').addClass('open');
-  $.get('/api/user/'+encodeURIComponent(author), function(d) {
-    let html = '';
-    if(d.error) { $('#modal-content').html('<p style="color:var(--red)">'+d.error+'</p>'); return; }
-    const bars = [
-      {label:'Bot Olasılığı', val:d.bot_prob||0, color:'var(--blue)'},
-      {label:'Nefret Söylemi', val:d.hate_score||0, color:'var(--red)'},
-      {label:'Stalker',        val:d.stalker_score||0, color:'var(--purple)'},
-      {label:'Anti-Semitizm', val:d.hate_breakdown?.antisemitism||0, color:'#8B0000'},
-      {label:'Groyper',       val:d.hate_breakdown?.groyper||0, color:'#555'},
-      {label:'İnsan',          val:d.human_score||0, color:'var(--green)'},
-    ];
-    bars.forEach(b => {
-      const pct = (b.val*100).toFixed(1);
-      html += `<div class="detail-row">
-        <label>${b.label}</label>
-        <div class="progress-bar"><div class="progress-fill" style="width:${pct}%;background:${b.color}"></div></div>
-        <span style="width:45px;text-align:right;color:var(--text2)">${pct}%</span>
-      </div>`;
-    });
-    if(d.ollama_summary) html += `<div class="card" style="margin-top:10px"><h3>AI Analizi (Ollama)</h3><p style="font-size:12px;color:var(--text2);line-height:1.6">${d.ollama_summary}</p></div>`;
-    if(d.account_created) html += `<div class="detail-row"><label>Hesap Oluşturma</label><span>${d.account_created}</span>${d.is_new_account?'<span style="background:var(--purple);color:#fff;padding:1px 6px;border-radius:3px;font-size:10px">YENİ HESAP</span>':''}</div>`;
-    html += `<div style="display:flex;gap:8px;margin-top:12px">
-      <button class="btn" onclick="analyzeUser('${author}');closeModal()">⚡ Analiz Et</button>
-      <button class="btn btn-outline" onclick="loadUserMessages('${author}')">💬 Mesajlar</button>
-      <button class="btn btn-red" onclick="banUser('${author}')">🚫 Yasakla</button>
-    </div>`;
-    $('#modal-content').html(html);
-  });
-}
-
-function closeModal() { $('.modal').removeClass('open'); }
-
-function analyzeUser(author) {
-  setStatus('Analiz: @'+author+'...');
-  $.post('/api/analyze/user', {author:author}, function(d) {
-    setStatus('✅ @'+author+' analizi tamamlandı — '+d.threat_level);
-    loadUsers();
-  }).fail(function(){setStatus('❌ Analiz hatası')});
-}
-
-function analyzeAllUsers() {
-  setStatus('Tüm kullanıcılar analiz ediliyor...');
-  $.post('/api/analyze/all', {}, function(d) {
-    setStatus('✅ '+d.analyzed+' kullanıcı analiz edildi');
-    loadUsers();
-  });
-}
-
-function banUser(author) {
-  if(!confirm('@'+author+' kullanıcısını yasaklamak istediğinize emin misiniz?')) return;
-  $.post('/api/user/'+encodeURIComponent(author)+'/ban', {}, function(d) {
-    setStatus(d.message || '✅ Kullanıcı işlemi tamamlandı');
-    loadUsers();
-  });
-}
-
-function runClustering() {
-  setStatus('Kümeleme çalışıyor...');
-  $.post('/api/cluster', {}, function(d) {
-    setStatus('✅ Kümeleme tamamlandı');
-    loadGraph();
-  });
-}
-
-// ─── MESAJLAR ────────────────────────────────────────────────────────────────
-let msgSearchTimer = null;
-function searchMessages(val) {
-  clearTimeout(msgSearchTimer);
-  msgSearchTimer = setTimeout(function(){ loadMessages(1); }, 300);
-}
-
-function loadMessages(page) {
-  if(page) msgPage = page;
-  $.get('/api/messages', {
-    page: msgPage, size: pageSize,
-    q: $('#msg-filter').val(),
-    author: $('#msg-author').val(),
-    source: $('#msg-source').val()
-  }, function(d) {
-    totalMsgs = d.total;
-    $('#msg-count').text(d.total + ' mesaj');
-    let html = '';
-    (d.messages||[]).forEach(m => {
-      const ts = m.timestamp ? new Date(m.timestamp*1000).toLocaleString() : '';
-      html += `<div class="msg-item ${m.threat_level && m.threat_level!='GREEN' ? 'highlight' : ''}">
-        <div class="meta">
-          <span style="color:var(--accent)">@${m.author}</span>
-          <span>${m.video_id||''}</span>
-          <span class="threat-badge t-${m.threat_level||'GREEN'}">${m.threat_level||'GREEN'}</span>
-          <span>${ts}</span>
-          <span style="color:var(--text2)">${m.lang||''}</span>
-        </div>
-        <div class="text">${highlight(m.message, $('#msg-filter').val())}</div>
-        <div class="actions">
-          <button class="btn btn-red" onclick="deleteMsg('${m.video_id}','${m.author}','${(m.message||'').substring(0,30).replace(/'/g,'\\'')}')">🗑️</button>
-        </div>
-      </div>`;
-    });
-    $('#messages-list').html(html || '<p style="color:var(--text2)">Mesaj bulunamadı</p>');
-    renderPagination('messages', d.total, msgPage);
-  });
-}
-
-function highlight(text, query) {
-  if(!query) return text;
-  const re = new RegExp('('+query.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+')','gi');
-  return text.replace(re, '<mark style="background:rgba(88,166,255,.3);color:var(--text)">$1</mark>');
-}
-
-function loadUserMessages(author) {
-  closeModal();
-  showTab('messages', document.querySelector(`.nav-item[onclick*="showTab('messages'"]`));
-  $('#msg-author').val(author);
-  loadMessages(1);
-}
-
-function loadDeleteCandidates() {
-  $('#delete-candidates-card').show();
-  $('#delete-candidates-list').html('<div class="loader"></div>');
-  $.get('/api/review/delete-candidates', {limit: 200}, function(d) {
-    const actionsEnabled = !!d.allow_destructive_actions;
-    const rows = d.candidates || [];
-    let html = `<div style="margin-bottom:8px;color:var(--text2);font-size:12px">
-      ${rows.length} aday bulundu • Otomatik silme: ${actionsEnabled ? 'Açık' : 'Kapalı (güvenlik modu)'}
-    </div>`;
-    rows.slice(0,100).forEach(item => {
-      html += `<div class="msg-item">
-        <div class="meta">
-          <span class="threat-badge t-${item.threat_level||'RED'}">${item.threat_level||'RED'}</span>
-          <span style="color:var(--accent)">@${item.author||'unknown'}</span>
-          <span>${item.video_id||''}</span>
-          <span style="color:var(--text2)">${((item.threat_score||0)*100).toFixed(0)}%</span>
-        </div>
-        <div class="text">${highlight(item.message||'', $('#msg-filter').val())}</div>
-      </div>`;
-    });
-    $('#delete-candidates-list').html(html || '<p style="color:var(--text2)">Aday bulunamadı</p>');
-  }).fail(function(xhr){
-    const err = xhr?.responseJSON?.error || 'Silme adayları yüklenemedi';
-    $('#delete-candidates-list').html('<p style="color:var(--red)">❌ '+err+'</p>');
-  });
-}
-
-function deleteMsg(videoId, author, msgPreview) {
-  if(!confirm('Bu yorum silinsin mi?\n@'+author+': '+msgPreview)) return;
-  $.post('/api/delete/comment', {video_id:videoId, author:author, message:msgPreview}, function(d) {
-    setStatus(d.success ? '✅ Yorum silindi' : '❌ '+d.error);
-    loadMessages();
-  }).fail(function(xhr){
-    const err = xhr?.responseJSON?.error || 'Silme isteği başarısız';
-    setStatus('❌ '+err);
-  });
-}
-
-// ─── GRAF ────────────────────────────────────────────────────────────────────
-function loadGraph() {
-  setStatus('Graf yükleniyor...');
-  $.get('/api/graph', function(d) {
-    graphData = d.graph_data;
-    renderForceGraph(graphData);
-    renderClusterList(d.clusters||{});
-    setStatus('✅ Graf yüklendi');
-  });
-}
-
-function renderForceGraph(data) {
-  const container = document.getElementById('graph-container');
-  container.innerHTML = '';
-  if(!data || !data.nodes || data.nodes.length === 0) {
-    container.innerHTML = '<p style="padding:20px;color:var(--text2)">Veri yok. Önce kümeleme çalıştırın.</p>';
-    return;
-  }
-  const W=container.clientWidth||800, H=500;
-  const svg = d3.select('#graph-container').append('svg').attr('width',W).attr('height',H)
-    .call(d3.zoom().on('zoom',e=>g.attr('transform',e.transform)));
-  const g = svg.append('g');
-  const colors = d3.schemeTableau10;
-  const sim = d3.forceSimulation(data.nodes)
-    .force('link', d3.forceLink(data.links).id(d=>d.id).distance(80))
-    .force('charge', d3.forceManyBody().strength(-200))
-    .force('center', d3.forceCenter(W/2,H/2));
-  const link = g.append('g').selectAll('line').data(data.links).enter()
-    .append('line').attr('class','graph-link').attr('stroke-width',d=>Math.max(1,d.value*3));
-  const node = g.append('g').selectAll('circle').data(data.nodes).enter()
-    .append('circle').attr('class','graph-node').attr('r',7)
-    .attr('fill',d=>colors[d.group%10])
-    .on('click',(_,d)=>showUserDetail(d.id))
-    .call(d3.drag().on('start',e=>{if(!e.active)sim.alphaTarget(.3).restart();e.subject.fx=e.subject.x;e.subject.fy=e.subject.y})
-      .on('drag',e=>{e.subject.fx=e.x;e.subject.fy=e.y})
-      .on('end',e=>{if(!e.active)sim.alphaTarget(0);e.subject.fx=null;e.subject.fy=null}));
-  const label = g.append('g').selectAll('text').data(data.nodes).enter()
-    .append('text').attr('class','node-label').attr('dy',18).text(d=>d.id);
-  sim.on('tick',()=>{
-    link.attr('x1',d=>d.source.x).attr('y1',d=>d.source.y).attr('x2',d=>d.target.x).attr('y2',d=>d.target.y);
-    node.attr('cx',d=>d.x).attr('cy',d=>d.y);
-    label.attr('x',d=>d.x).attr('y',d=>d.y);
-  });
-}
-
-function renderClusterList(clusters) {
-  let html = '';
-  Object.entries(clusters).forEach(([id,members])=>{
-    if(!Array.isArray(members)||members.length===0) return;
-    html += `<div style="margin-bottom:8px">
-      <strong>Küme ${id}</strong> (${members.length} üye):
-      ${members.map(m=>`<a href="#" onclick="showUserDetail('${m}')" style="color:var(--accent)">${m}</a>`).join(', ')}
-    </div>`;
-  });
-  $('#cluster-list').html(html || '<p style="color:var(--text2)">Küme yok</p>');
-}
-
-// ─── CANLI YAYIN ─────────────────────────────────────────────────────────────
-function startLiveMonitor() {
-  const vid = $('#live-video-id').val().trim();
-  if(!vid || vid.length!==11) { alert('Geçerli bir Video ID girin (11 karakter)'); return; }
-  currentLiveVideoId = vid;
-  $.post('/api/live/start', {video_id:vid}, function(d) {
-    if(d.success){
-      setStatus('⚡ Canlı monitör başlatıldı: '+vid);
-      $('#live-indicator').show();
-    } else {
-      setStatus('❌ '+(d.error||'Canlı monitör başlatılamadı'));
-    }
-  }).fail(function(xhr){
-    const err = xhr?.responseJSON?.error || 'Canlı monitör isteği başarısız';
-    setStatus('❌ '+err);
-  });
-}
-
-function stopLiveMonitor() {
-  $.post('/api/live/stop', {}, function() {
-    setStatus('Canlı monitör durduruldu'); $('#live-indicator').hide();
-  });
-}
-
-socket.on('live_alert', function(data) {
-  const ts = new Date(data.timestamp*1000).toLocaleTimeString();
-  const html = `<div class="alert-item alert-${data.threat_level}" style="margin-bottom:6px">
-    <span style="background:${data.threat_color};color:#000;padding:1px 6px;border-radius:3px;font-size:10px;font-weight:700">${data.threat_level}</span>
-    <strong>@${data.author}</strong>
-    <span style="color:var(--text2)">${ts}</span>
-    <span>${(data.message||'').substring(0,100)}</span>
-    <button class="btn btn-red" style="margin-left:auto;font-size:10px;padding:2px 6px"
-      onclick="deleteLiveMsg('${data.video_id}','${data.author}','${(data.message||'').substring(0,30).replace(/'/g,'\\'')}')">Sil</button>
-  </div>`;
-  $('#live-messages').prepend(html);
-  addAlert(data);
-  if(data.threat_level==='RED'||data.threat_level==='CRIMSON') {
-    document.title = '🚨 '+data.threat_level+' — '+data.author;
-    setTimeout(()=>document.title='YT Guardian v2.0 — @ShmirchikArt',5000);
-  }
-});
-
-function deleteLiveMsg(videoId, author, msgPreview) {
-  $.post('/api/delete/live', {video_id:videoId, author:author, message:msgPreview}, function(d) {
-    setStatus(d.success ? '✅ Canlı mesaj silindi' : '❌ '+d.error);
-  }).fail(function(xhr){
-    const err = xhr?.responseJSON?.error || 'Canlı mesaj silinemedi';
-    setStatus('❌ '+err);
-  });
-}
-
-// ─── ARAMA ───────────────────────────────────────────────────────────────────
-let searchTimer = null;
-function globalSearch(val) {
-  clearTimeout(searchTimer);
-  if(val.length < 2) return;
-  searchTimer = setTimeout(function(){
-    $.get('/api/search', {q:val, mode:$('#search-mode').val()}, function(d) {
-      // Hızlı önizleme göster
-    });
-  }, 300);
-}
-
-function advancedSearch() {
-  const q = $('#adv-search').val().trim();
-  const mode = $('#adv-mode').val();
-  if(!q) return;
-  $('#search-results').html('<div class="loader"></div>');
-  $.get('/api/search', {q:q, mode:mode}, function(d) {
-    let html = '';
-    if(d.users&&d.users.length>0) {
-      html += '<h4 style="margin-bottom:8px;color:var(--text2)">Kullanıcılar</h4>';
-      d.users.forEach(u=>{
-        html += `<div class="msg-item"><div class="meta">
-          <a href="#" onclick="showUserDetail('${u.author}')" style="color:var(--accent)">@${u.author}</a>
-          <span class="threat-badge t-${u.threat_level}">${u.threat_level}</span>
-          <span>${u.msg_count} mesaj</span></div></div>`;
-      });
-    }
-    if(d.messages&&d.messages.length>0) {
-      html += '<h4 style="margin:12px 0 8px;color:var(--text2)">Mesajlar ('+d.messages.length+')</h4>';
-      d.messages.forEach(m=>{
-        html += `<div class="msg-item"><div class="meta">
-          <a href="#" onclick="showUserDetail('${m.author}')" style="color:var(--accent)">@${m.author}</a>
-          <span>${m.video_id}</span></div>
-          <div class="text">${highlight(m.message,q)}</div></div>`;
-      });
-    }
-    if(!html) html = '<p style="color:var(--text2)">Sonuç bulunamadı</p>';
-    $('#search-results').html(html);
-  });
-}
-
-// ─── İSTATİSTİKLER ───────────────────────────────────────────────────────────
-function loadStats() {
-  $.get('/api/identity-links', function(d) {
-    let html = '';
-    (d.links||[]).slice(0,50).forEach(l=>{
-      html += `<div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--border)">
-        <a href="#" onclick="showUserDetail('${l.user_a}')" style="color:var(--accent)">${l.user_a}</a>
-        <span style="color:var(--text2)">⟷</span>
-        <a href="#" onclick="showUserDetail('${l.user_b}')" style="color:var(--accent)">${l.user_b}</a>
-        <span style="color:var(--yellow)">${(l.sim_score*100).toFixed(0)}%</span>
-        <span style="color:var(--text2);font-size:10px">${l.method||'combined'}</span>
-      </div>`;
-    });
-    $('#identity-links-list').html(html || '<p style="color:var(--text2)">Bağlantı yok</p>');
-  });
-  $.get('/api/nash', function(d) {
-    let html = `<table style="width:100%;border-collapse:collapse;font-size:12px">
-      <tr><th>Mod Eylemi</th><th>Aktör Eylemi</th><th>Mod Payoff</th><th>Aktör Payoff</th></tr>`;
-    (d.equilibria||[]).forEach(e=>{
-      html += `<tr><td style="color:var(--accent)">${e[2]}</td><td>${e[3]}</td><td>${e[0]}</td><td>${e[1]}</td></tr>`;
-    });
-    html += '</table>';
-    $('#nash-table').html(html);
-  });
-}
-
-// ─── DATASET ─────────────────────────────────────────────────────────────────
-function loadPendingDataset() {
-  $.get('/api/dataset/pending', function(d) {
-    let html = '';
-    (d.items||[]).forEach(item=>{
-      html += `<div class="msg-item" style="display:flex;align-items:flex-start;gap:10px">
-        <div style="flex:1">
-          <div class="meta"><strong>@${item.author}</strong><span class="threat-badge t-${item.label}">${item.label}</span></div>
-          <div class="text">${item.message.substring(0,200)}</div>
-        </div>
-        <div style="display:flex;gap:4px;flex-shrink:0">
-          <button class="btn btn-green" style="font-size:10px" onclick="approveDataset(${item.id})">✓</button>
-          <select id="lbl-${item.id}" style="background:var(--bg3);border:1px solid var(--border);color:var(--text);font-size:10px;border-radius:4px">
-            <option>ANTISEMITE</option><option>GROYPER</option><option>HATER</option>
-            <option>BOT</option><option>STALKER</option><option>NORMAL</option>
-          </select>
-          <button class="btn btn-outline" style="font-size:10px" onclick="approveDatasetLabel(${item.id})">✓ Etiketle</button>
-        </div>
-      </div>`;
-    });
-    $('#dataset-items').html(html || '<p style="color:var(--text2)">Bekleyen öğe yok</p>');
-  });
-}
-
-function approveDataset(id) {
-  $.post('/api/dataset/approve', {id:id}, function(d) {
-    setStatus('✅ Onaylandı'); loadPendingDataset();
-  });
-}
-
-function approveDatasetLabel(id) {
-  const label = $('#lbl-'+id).val();
-  $.post('/api/dataset/approve', {id:id, label:label}, function(d) {
-    setStatus('✅ '+label+' olarak onaylandı'); loadPendingDataset();
-  });
-}
-
-function retrainModel() {
-  if(!confirm('Modeli yeniden eğitmek istiyor musunuz?')) return;
-  setStatus('Yeniden eğitim başlatılıyor...');
-  $.post('/api/retrain', {}, function(d) {
-    setStatus(d.success ? '✅ Eğitim tamamlandı — F1: '+d.f1 : '❌ '+d.error);
-  });
-}
-
-// ─── AYARLAR ─────────────────────────────────────────────────────────────────
-function loadStatus() {
-  $.get('/api/status', function(d) {
-    let html = '';
-    Object.entries(d).forEach(([k,v])=>{
-      const ok = v===true||v==='OK'||v==='ok';
-      html += `<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--border)">
-        <span>${k}</span>
-        <span style="color:${typeof v==='boolean'?(ok?'var(--green)':'var(--red)'):'var(--text2)'}">${typeof v==='boolean'?(v?'✅ Aktif':'❌ Pasif'):v}</span>
-      </div>`;
-    });
-    $('#system-status').html(html);
-  });
-}
-
-function ytLogin() {
-  const email = $('#yt-email').val(); const pass = $('#yt-pass').val();
-  $('#login-status').text('Giriş yapılıyor...');
-  $.post('/api/yt/login', {email:email, password:pass}, function(d) {
-    $('#login-status').css('color',d.success?'var(--green)':'var(--red)').text(d.message);
-  }).fail(function(xhr){
-    const msg = xhr?.responseJSON?.message || 'Giriş isteği başarısız';
-    $('#login-status').css('color','var(--red)').text(msg);
-  });
-}
-
-function startScrape() {
-  setStatus('Scrape başlıyor (arka plan)...');
-  $.post('/api/scrape', {}, function(d) {
-    if(d.success) setStatus('🧹 Tarama arka planda çalışıyor...');
-    else setStatus('❌ '+(d.message||'Tarama başlatılamadı'));
-  }).fail(function(){setStatus('❌ Tarama hatası')});
-}
-
-// ─── YARDIMCI ─────────────────────────────────────────────────────────────────
-function setStatus(msg) { $('#status-msg').text(msg); }
-socket.on('connected', function() { setStatus('WebSocket bağlı'); });
-socket.on('login_result', function(data) {
-  const ok = !!data.success;
-  $('#login-status').css('color', ok ? 'var(--green)' : 'var(--red)')
-                    .text(ok ? '✅ Giriş başarılı' : '❌ Giriş başarısız');
-  setStatus(ok ? '✅ YouTube oturumu açıldı' : '❌ YouTube giriş hatası');
-});
-socket.on('scrape_progress', function(data) {
-  const v = data.video_id ? (' ['+data.video_id+']') : '';
-  setStatus(`Tarama sürüyor${v} — +${data.new_messages||0} mesaj`);
-});
-socket.on('scrape_done', function(data) {
-  setStatus(`✅ Tarama tamamlandı — ${data.total_messages||0} mesaj`);
-  loadDashboard();
-  if($('#tab-messages').hasClass('active')) loadMessages();
-  if($('#tab-users').hasClass('active')) loadUsers();
-});
-socket.on('delete_result', function(data) {
-  const ok = !!data.success;
-  setStatus(ok ? '✅ Silme işlemi tamamlandı' : '❌ Silme işlemi başarısız');
-  if($('#tab-messages').hasClass('active')) loadMessages();
-});
-$(document).ready(function() { loadDashboard(); });
-$(document).on('keydown', function(e){ if(e.key==='Escape') closeModal(); });
+}).mount('#app');
 </script>
 </body>
 </html>
