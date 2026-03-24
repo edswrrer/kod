@@ -2939,8 +2939,18 @@ mark{background:rgba(88,166,255,.25);color:var(--tx);border-radius:2px;padding:0
     <span id="ucnt" style="color:var(--tx2);font-size:11px;margin-left:auto"></span>
   </div>
   <table class="tbl">
-    <thead><tr><th>Kullanıcı</th><th>Msg</th><th>Tehdit</th><th>Bot%</th>
-    <th>Nefret%</th><th>AntiSem%</th><th>Stalker%</th><th>HMM</th><th>Skor</th><th>İşlem</th></tr></thead>
+    <thead><tr>
+      <th id="uh-author" style="cursor:pointer" onclick="sortUsers('author')">Kullanıcı</th>
+      <th id="uh-msg_count" style="cursor:pointer" onclick="sortUsers('msg_count')">Msg</th>
+      <th id="uh-threat_level" style="cursor:pointer" onclick="sortUsers('threat_level')">Tehdit</th>
+      <th id="uh-bot_prob" style="cursor:pointer" onclick="sortUsers('bot_prob')">Bot%</th>
+      <th id="uh-hate_score" style="cursor:pointer" onclick="sortUsers('hate_score')">Nefret%</th>
+      <th id="uh-antisemitism_score" style="cursor:pointer" onclick="sortUsers('antisemitism_score')">AntiSem%</th>
+      <th id="uh-stalker_score" style="cursor:pointer" onclick="sortUsers('stalker_score')">Stalker%</th>
+      <th id="uh-hmm_state" style="cursor:pointer" onclick="sortUsers('hmm_state')">HMM</th>
+      <th id="uh-threat_score" style="cursor:pointer" onclick="sortUsers('threat_score')">Skor</th>
+      <th>İşlem</th>
+    </tr></thead>
     <tbody id="utbody"></tbody>
   </table>
   <div class="pager" id="upager"></div>
@@ -3097,6 +3107,7 @@ mark{background:rgba(88,166,255,.25);color:var(--tx);border-radius:2px;padding:0
 <script>
 const socket = io('/ws', {transports:['websocket','polling']});
 let page = {users:1,msgs:1}, pgSize = 50;
+let userSort = {by:'msg_count',dir:'desc'};
 let threatChart = null, graphLoaded = false;
 const CLR = {G:'#2ECC71',Y:'#F1C40F',O:'#E67E22',R:'#E74C3C',C:'#8B0000',B:'#3498DB',P:'#9B59B6'};
 const LVL2CLS = {GREEN:'G',YELLOW:'Y',ORANGE:'O',RED:'R',CRIMSON:'C',BLUE:'B',PURPLE:'P'};
@@ -3166,7 +3177,8 @@ function addAlert(d){
 function loadUsers(p){
   if(p) page.users=p;
   $.get('/api/users',{page:page.users,size:pgSize,
-    filter:$('#uf').val(),threat:$('#tf').val()},function(d){
+    filter:$('#uf').val(),threat:$('#tf').val(),
+    sort_by:userSort.by,sort_dir:userSort.dir},function(d){
     $('#ucnt').text(d.total+' kullanıcı');
     let h='';
     (d.users||[]).forEach(u=>{
@@ -3190,7 +3202,29 @@ function loadUsers(p){
       </tr>`;
     });
     $('#utbody').html(h);
+    updateUserSortUI();
     pager('upager',d.total,page.users,'loadUsers');
+  });
+}
+
+function sortUsers(by){
+  if(userSort.by===by) userSort.dir = userSort.dir==='asc' ? 'desc' : 'asc';
+  else{
+    userSort.by = by;
+    userSort.dir = (by==='author' || by==='threat_level' || by==='hmm_state') ? 'asc' : 'desc';
+  }
+  loadUsers(1);
+}
+
+function updateUserSortUI(){
+  const ids = ['author','msg_count','threat_level','bot_prob','hate_score',
+    'antisemitism_score','stalker_score','hmm_state','threat_score'];
+  ids.forEach(k=>{
+    const el = document.getElementById('uh-'+k);
+    if(!el) return;
+    const base = el.textContent.replace(/\s*[▲▼]$/,'');
+    const mark = userSort.by===k ? (userSort.dir==='asc' ? ' ▲' : ' ▼') : '';
+    el.textContent = base + mark;
   });
 }
 
@@ -3782,8 +3816,23 @@ def create_app():
     def api_users():
         p=int(request.args.get("page",1)); sz=int(request.args.get("size",50))
         flt=request.args.get("filter",""); thr=request.args.get("threat","")
+        sort_by=request.args.get("sort_by","msg_count")
+        sort_dir=request.args.get("sort_dir","desc").lower()
         include_empty = request.args.get("include_empty","0") == "1"
         off=(p-1)*sz; wh="WHERE 1=1"; prms=[]
+        order_map = {
+            "author": "author",
+            "msg_count": "msg_count",
+            "threat_level": "threat_level",
+            "bot_prob": "bot_prob",
+            "hate_score": "hate_score",
+            "antisemitism_score": "antisemitism_score",
+            "stalker_score": "stalker_score",
+            "hmm_state": "hmm_state",
+            "threat_score": "threat_score",
+        }
+        order_col = order_map.get(sort_by, "msg_count")
+        order_dir = "ASC" if sort_dir == "asc" else "DESC"
         if flt: wh+=" AND author LIKE ?"; prms.append(f"%{flt}%")
         if thr: wh+=" AND threat_level=?"; prms.append(thr)
         if not include_empty:
@@ -3792,7 +3841,7 @@ def create_app():
         rows=db_exec(
             f"SELECT user_profiles.*, "
             f"COALESCE((SELECT COUNT(*) FROM messages m WHERE m.author=user_profiles.author AND m.deleted=0),0) AS msg_count "
-            f"FROM user_profiles {wh} ORDER BY threat_score DESC LIMIT ? OFFSET ?",
+            f"FROM user_profiles {wh} ORDER BY {order_col} {order_dir}, author ASC LIMIT ? OFFSET ?",
             tuple(prms)+(sz,off),fetch="all") or []
         return jsonify({"users":[dict(r) for r in rows],"total":tot})
 
