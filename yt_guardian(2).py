@@ -130,7 +130,7 @@ class Config:
     YT_CLIENT_SECRETS   = os.environ.get("YT_CLIENT_SECRETS", "client_secrets.json")
     YT_EMAIL            = os.environ.get("YT_EMAIL", "")
     YT_PASS             = os.environ.get("YT_PASS", "")
-    CHANNEL_HANDLE      = os.environ.get("CHANNEL_HANDLE", "ShmirchikArt")
+    CHANNEL_HANDLE      = os.environ.get("CHANNEL_HANDLE", "@ShmirchikArt")
     CHANNEL_ID          = os.environ.get("CHANNEL_ID", "")
     GEMINI_API_KEY      = os.environ.get("GEMINI_API_KEY", "")
     FLASK_SECRET        = os.environ.get("FLASK_SECRET", os.urandom(24).hex())
@@ -205,6 +205,15 @@ class Config:
             "follow for follow", "f4f", "s4s", "buy followers"
         ]
     }
+
+    @classmethod
+    def normalized_handle(cls) -> str:
+        """@ ile başlayan veya başlamayan handle girdilerini normalize et."""
+        return (cls.CHANNEL_HANDLE or "ShmirchikArt").strip().lstrip("@")
+
+    @classmethod
+    def channel_streams_url(cls) -> str:
+        return f"https://www.youtube.com/@{cls.normalized_handle()}/streams"
 
 Config.DATA_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -728,7 +737,7 @@ class YTDLPScraper:
         https://www.youtube.com/@HANDLE/videos veya /streams adresinden
         video listesini çek. video_type: 'videos' | 'streams'
         """
-        handle = Config.CHANNEL_HANDLE
+        handle = Config.normalized_handle()
         url = f"https://www.youtube.com/@{handle}/{video_type}"
         log.info(f"yt-dlp ile video listesi çekiliyor: {url}")
 
@@ -834,6 +843,113 @@ class YTDLPScraper:
 
         log.info(f"yt-dlp → {len(comments)} yorum: {video_id}")
         return comments
+
+    def _extract_live_chat_text(self, payload: Dict[str, Any]) -> str:
+        """
+        Canlı sohbet tekrarlarından metni NLP için normalize edilmiş şekilde çek.
+        JSON3/replay renderer varyasyonlarını toleranslı işler.
+        """
+        runs = (((payload.get("replayChatItemAction") or {}).get("actions") or [{}])[0]
+                .get("addChatItemAction", {})
+                .get("item", {})
+                .get("liveChatTextMessageRenderer", {})
+                .get("message", {})
+                .get("runs", []))
+        if runs:
+            text = "".join((r.get("text") or "") for r in runs).strip()
+            return ta.clean_text(text)
+        # VTT satırı / sade fallback
+        fallback = payload.get("text") or payload.get("message") or ""
+        return ta.clean_text(str(fallback))
+
+    def get_stream_replay_chat_messages(self, video_id: str,
+                                        max_results: int = Config.MAX_COMMENTS_PER_VIDEO) -> List[Dict]:
+        """
+        Canlı yayın tekrar sohbetini (live chat replay) yt-dlp ile al.
+        NLP tabanlı otomasyon: metin temizleme + dil tespiti pipeline'ına uygun format.
+        """
+        import tempfile
+        url = f"https://www.youtube.com/watch?v={video_id}"
+        comments: List[Dict] = []
+        with tempfile.TemporaryDirectory(prefix="ytg_chat_") as tmpdir:
+            outtmpl = os.path.join(tmpdir, "%(id)s.%(ext)s")
+            self._run_ytdlp([
+                "--skip-download",
+                "--write-subs",
+                "--sub-langs", "live_chat",
+                "--sub-format", "json3/vtt/best",
+                "--output", outtmpl,
+                "--no-warnings",
+                "--quiet",
+                url
+            ], timeout=300)
+
+            candidates = list(Path(tmpdir).glob(f"{video_id}*.live_chat*"))
+            for fpath in candidates:
+                try:
+                    if fpath.suffix in (".json", ".json3"):
+                        data = json.loads(fpath.read_text(encoding="utf-8", errors="ignore"))
+                        events = data.get("events", []) if isinstance(data, dict) else []
+                        for idx, event in enumerate(events):
+                            text = self._extract_live_chat_text(event)
+                            if not text:
+                                continue
+                            ts_ms = (event.get("replayChatItemAction", {})
+                                         .get("videoOffsetTimeMsec")) or 0
+                            ts = int(int(ts_ms) / 1000) if str(ts_ms).isdigit() else 0
+                            ts_iso = (datetime.datetime.utcfromtimestamp(ts).isoformat() + "Z"
+                                      if ts else "")
+                            msg_id = hashlib.md5(f"{video_id}:{idx}:{text[:32]}".encode()).hexdigest()
+                            comments.append({
+                                "comment_id":        msg_id,
+                                "video_id":          video_id,
+                                "author":            "",
+                                "author_channel_id": "",
+                                "text":              text,
+                                "timestamp_utc":     ts,
+                                "timestamp_iso":     ts_iso,
+                                "like_count":        0,
+                                "reply_count":       0,
+                                "source_type":       "live_chat_replay",
+                                "is_live":           0
+                            })
+                    elif fpath.suffix == ".vtt":
+                        for idx, line in enumerate(fpath.read_text(encoding="utf-8", errors="ignore").splitlines()):
+                            line = line.strip()
+                            if (not line or "-->" in line or line.startswith("WEBVTT")
+                                    or line.isdigit()):
+                                continue
+                            text = ta.clean_text(line)
+                            if len(text) < 2:
+                                continue
+                            msg_id = hashlib.md5(f"{video_id}:vtt:{idx}:{text[:32]}".encode()).hexdigest()
+                            comments.append({
+                                "comment_id":        msg_id,
+                                "video_id":          video_id,
+                                "author":            "",
+                                "author_channel_id": "",
+                                "text":              text,
+                                "timestamp_utc":     0,
+                                "timestamp_iso":     "",
+                                "like_count":        0,
+                                "reply_count":       0,
+                                "source_type":       "live_chat_replay",
+                                "is_live":           0
+                            })
+                except Exception as e:
+                    log.debug(f"Live chat replay parse hatası ({fpath.name}): {e}")
+
+        unique, seen = [], set()
+        for c in comments:
+            key = (c["comment_id"], c["text"])
+            if key in seen:
+                continue
+            seen.add(key)
+            unique.append(c)
+            if len(unique) >= max_results:
+                break
+        log.info(f"yt-dlp → {len(unique)} live chat replay mesajı: {video_id}")
+        return unique
 
 ytdlp_scraper = YTDLPScraper()
 
@@ -1598,7 +1714,7 @@ class DataCollector:
         Öncelik: YouTube Data API (varsa) → yt-dlp (API anahtarı gerekmez).
         """
         log.info(f"Veri toplama başlıyor: {channel_id}")
-        stats = {"videos": 0, "comments": 0, "errors": 0, "source": ""}
+        stats = {"videos": 0, "comments": 0, "live_chat_replay": 0, "errors": 0, "source": ""}
 
         # ── Video listesi ──────────────────────────────────────────────────
         use_api = bool(yt_api.service)
@@ -1631,6 +1747,11 @@ class DataCollector:
                     comments = yt_api.get_video_comments(v["video_id"])
                 else:
                     comments = ytdlp_scraper.get_video_comments(v["video_id"])
+                # 2023-2026 stream replay sohbetlerini NLP hattına dahil et
+                if v.get("video_type") == "stream":
+                    replay_msgs = ytdlp_scraper.get_stream_replay_chat_messages(v["video_id"])
+                    comments.extend(replay_msgs)
+                    stats["live_chat_replay"] += len(replay_msgs)
                 for c in comments:
                     c["video_id"] = v["video_id"]
                     self.save_comment(c)
@@ -1649,6 +1770,38 @@ class DataCollector:
             time.sleep(0.5 if not use_api else 0.2)
 
         log.info(f"Toplama tamamlandı: {stats}")
+        return stats
+
+    def collect_stream_replays_from_channel(self,
+                                            streams_url: str = "https://www.youtube.com/@ShmirchikArt/streams",
+                                            year_start: int = 2023,
+                                            year_end: int = 2026) -> Dict[str, int]:
+        """
+        Verilen /streams adresinden canlı yayın tekrar sohbet verilerini topla.
+        Yıllar: [year_start, year_end] aralığı.
+        """
+        videos = ytdlp_scraper.get_channel_videos("streams", max_results=1000)
+        stats = {"streams": 0, "messages": 0, "errors": 0}
+        for v in videos:
+            published = (v.get("published_at") or "")[:4]
+            year = int(published) if published.isdigit() else None
+            if year is not None and not (year_start <= year <= year_end):
+                continue
+            try:
+                self.save_video(v)
+                replay_msgs = ytdlp_scraper.get_stream_replay_chat_messages(v["video_id"])
+                for c in replay_msgs:
+                    c["video_id"] = v["video_id"]
+                    self.save_comment(c)
+                db.execute(
+                    "UPDATE videos SET comment_count=comment_count+? WHERE video_id=?",
+                    (len(replay_msgs), v["video_id"])
+                )
+                stats["streams"] += 1
+                stats["messages"] += len(replay_msgs)
+            except Exception:
+                stats["errors"] += 1
+        log.info(f"Stream replay toplama tamamlandı ({streams_url}): {stats}")
         return stats
 
     def inspect_user_profiles(self, limit: int = 50) -> int:
@@ -1737,16 +1890,23 @@ class AnalysisEngine:
                               new_threat, threat_lv, cid))
                         # Tehdit olayı kaydet
                         if new_threat >= Config.HATE_THRESHOLD:
+                            video_row = db.fetchone(
+                                "SELECT video_id FROM comments WHERE comment_id=?",
+                                (c["comment_id"],)
+                            ) or {}
                             db.execute("""
                                 INSERT INTO threat_events
                                 (comment_id, channel_id, video_id, threat_type,
                                  threat_score, details)
                                 VALUES (?,?,?,?,?,?)
-                            """, (c["comment_id"], cid,
-                                  db.fetchone("SELECT video_id FROM comments WHERE comment_id=?",
-                                              (c["comment_id"],)) or {}).get("video_id",""),
-                                  threat_lv, new_threat,
-                                  json.dumps(result, ensure_ascii=False))
+                            """, (
+                                c["comment_id"],
+                                cid,
+                                video_row.get("video_id", ""),
+                                threat_lv,
+                                new_threat,
+                                json.dumps(result, ensure_ascii=False)
+                            ))
             except Exception as e:
                 log.error(f"Analiz hatası ({c['comment_id']}): {e}")
         return len(comments)
@@ -1991,7 +2151,7 @@ def api_stats():
         "live_active":     live_active,
         "threat_breakdown": threat_counts,
         "recent_threats":   recent_threats,
-        "channel_handle":  Config.CHANNEL_HANDLE,
+        "channel_handle":  f"@{Config.normalized_handle()}",
     })
 
 @app.route("/api/stats/realtime")
@@ -2223,7 +2383,7 @@ def api_collect_start():
     data = request.get_json() or {}
     channel_id = data.get("channel_id", Config.CHANNEL_ID)
     if not channel_id and Config.CHANNEL_HANDLE:
-        channel_id = yt_api.get_channel_id(Config.CHANNEL_HANDLE)
+        channel_id = yt_api.get_channel_id(Config.normalized_handle())
         if channel_id:
             Config.CHANNEL_ID = channel_id
     if not channel_id:
@@ -2257,6 +2417,22 @@ def api_collect_start():
 @app.route("/api/collect/status")
 def api_collect_status():
     return jsonify(_collection_status)
+
+@app.route("/api/collect/stream-replays", methods=["POST"])
+def api_collect_stream_replays():
+    data = request.get_json() or {}
+    streams_url = data.get("streams_url", Config.channel_streams_url()).strip() or Config.channel_streams_url()
+    year_start = int(data.get("year_start", 2023))
+    year_end = int(data.get("year_end", 2026))
+    # Şu an yalnızca varsayılan kanal destekleniyor; tek noktadan güvenli toplama.
+    if "shmirchikart" not in streams_url.lower():
+        return jsonify({"success": False, "error": "Sadece varsayılan kanal destekleniyor."}), 400
+    stats = collector.collect_stream_replays_from_channel(
+        streams_url=streams_url,
+        year_start=year_start,
+        year_end=year_end
+    )
+    return jsonify({"success": True, "streams_url": streams_url, "stats": stats})
 
 # ──── Analiz Tetikleme ─────────────────────────────────────────────────────────
 _analysis_status = {"running": False, "stats": {}}
@@ -2678,7 +2854,7 @@ if HAS_SOCKETIO:
     @socketio.on("connect")
     def on_connect():
         emit("connected", {"status": "ok",
-                           "channel": Config.CHANNEL_HANDLE})
+                           "channel": f"@{Config.normalized_handle()}"})
 
     @socketio.on("ping_live")
     def on_ping():
@@ -3878,8 +4054,8 @@ def check_environment():
         infos.append("✅ YouTube Data API anahtarı mevcut — birincil veri kaynağı: API")
     elif has_ytdlp:
         infos.append("✅ yt-dlp kurulu — birincil veri kaynağı: yt-dlp (API gerektirmez)")
-        infos.append(f"   Kanallar: https://youtube.com/@{Config.CHANNEL_HANDLE}/videos")
-        infos.append(f"             https://youtube.com/@{Config.CHANNEL_HANDLE}/streams")
+        infos.append(f"   Kanallar: https://youtube.com/@{Config.normalized_handle()}/videos")
+        infos.append(f"             {Config.channel_streams_url()}")
     else:
         warnings.append(
             "⚠️  Ne YT_API_KEY ne de yt-dlp mevcut!\n"
@@ -3913,7 +4089,7 @@ def check_environment():
         print("\n  ✅ Zorunlu bağımlılıklar hazır")
     print(f"\n  📦 Veritabanı : {Config.DB_PATH}")
     print(f"  🌐 Panel      : http://localhost:{Config.PORT}")
-    print(f"  📡 Kanal      : @{Config.CHANNEL_HANDLE}")
+    print(f"  📡 Kanal      : @{Config.normalized_handle()}")
     print(f"  🤖 Öneri API  : /api/suggest/comment/<id>  |  /api/suggest/user/<id>")
     print("="*60 + "\n")
 
@@ -3926,8 +4102,8 @@ if __name__ == "__main__":
     #   - API yoksa yt-dlp ile ilk videodan çıkar (veya handle'ı ID gibi kullan)
     if not Config.CHANNEL_ID and Config.CHANNEL_HANDLE:
         if yt_api.service and Config.YT_API_KEY:
-            log.info(f"Kanal ID alınıyor (API): @{Config.CHANNEL_HANDLE}")
-            cid = yt_api.get_channel_id(Config.CHANNEL_HANDLE)
+            log.info(f"Kanal ID alınıyor (API): @{Config.normalized_handle()}")
+            cid = yt_api.get_channel_id(Config.normalized_handle())
             if cid:
                 Config.CHANNEL_ID = cid
                 log.info(f"Kanal ID (API): {cid}")
@@ -3937,7 +4113,7 @@ if __name__ == "__main__":
             # yt-dlp ile tek video üzerinden kanal ID'yi çek
             import subprocess, json as _json
             try:
-                url = f"https://www.youtube.com/@{Config.CHANNEL_HANDLE}/videos"
+                url = f"https://www.youtube.com/@{Config.normalized_handle()}/videos"
                 r = subprocess.run(
                     ["yt-dlp", "--flat-playlist", "--playlist-end", "1",
                      "--print", "%(channel_id)s", "--quiet", "--no-warnings", url],
@@ -3949,10 +4125,10 @@ if __name__ == "__main__":
                     log.info(f"Kanal ID (yt-dlp): {cid}")
                 else:
                     log.info("yt-dlp ile kanal ID alınamadı; handle kullanılıyor.")
-                    Config.CHANNEL_ID = Config.CHANNEL_HANDLE
+                    Config.CHANNEL_ID = Config.normalized_handle()
             except Exception as e:
                 log.warning(f"yt-dlp kanal ID sorgusu başarısız: {e}")
-                Config.CHANNEL_ID = Config.CHANNEL_HANDLE
+                Config.CHANNEL_ID = Config.normalized_handle()
 
     if HAS_SOCKETIO and socketio:
         socketio.run(app, host="0.0.0.0", port=Config.PORT,
