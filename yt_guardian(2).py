@@ -168,7 +168,7 @@ _DEFAULT_CFG = {
     "new_account_months":   6,
     "chromium_binary":      "",
     "cookies_file":         "",
-    "cookies_from_browser": "chromium",
+    "cookies_from_browser": "",
 }
 
 def load_config(cfg_file: str = "yt_guardian_config.json") -> dict:
@@ -607,6 +607,43 @@ def _yt_dlp_base_cmd() -> List[str]:
     return cmd
 
 
+def _strip_cookies_from_browser_args(cmd: List[str]) -> List[str]:
+    """Komuttan --cookies-from-browser <browser> çiftini güvenli biçimde kaldır."""
+    out: List[str] = []
+    skip_next = False
+    for i, part in enumerate(cmd):
+        if skip_next:
+            skip_next = False
+            continue
+        if part == "--cookies-from-browser":
+            if i + 1 < len(cmd):
+                skip_next = True
+            continue
+        out.append(part)
+    return out
+
+
+def _run_ytdlp(cmd: List[str], timeout: int):
+    """
+    yt-dlp çalıştır.
+    Eğer tarayıcı cookie DB hatası alırsa aynı komutu cookies-from-browser olmadan tekrar dener.
+    """
+    res = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+
+    stderr = (res.stderr or "").lower()
+    cookie_db_err = (
+        "could not find chromium cookies database" in stderr
+        or "cookies-from-browser" in stderr and "error" in stderr
+    )
+    has_cfb = "--cookies-from-browser" in cmd
+
+    if res.returncode != 0 and has_cfb and cookie_db_err:
+        log.warning("yt-dlp browser cookie hatası; cookies-from-browser olmadan tekrar deneniyor.")
+        retry_cmd = _strip_cookies_from_browser_args(cmd)
+        res = subprocess.run(retry_cmd, capture_output=True, text=True, timeout=timeout)
+    return res
+
+
 def export_cookies_from_driver(driver, cookie_file: str = None) -> bool:
     if not driver:
         return False
@@ -741,7 +778,7 @@ def ytdlp_list_videos(channel_url: str, date_from: str, date_to: str) -> List[Di
         ]
 
         try:
-            res = subprocess.run(cmd, capture_output=True, text=True, timeout=240)
+            res = _run_ytdlp(cmd, timeout=240)
 
             if res.stderr and res.returncode != 0:
                 log.warning("yt-dlp stderr (%s): %s", src_url, res.stderr.strip()[:1500])
@@ -819,7 +856,7 @@ def ytdlp_comments(video_id: str, title: str = "", video_date: str = "",
     "-o", str(odir / f"{video_id}.%(ext)s"),
     f"https://www.youtube.com/watch?v={video_id}",]
     try:
-        subprocess.run(cmd, capture_output=True, timeout=240)
+        _run_ytdlp(cmd, timeout=240)
     except Exception as e:
         log.warning("yt-dlp yorum hatası %s: %s", video_id, e)
     info = odir / f"{video_id}.info.json"
@@ -975,7 +1012,7 @@ def ytdlp_live_chat(video_id: str, title: str = "", video_date: str = "") -> Lis
     "-o", str(odir / f"{video_id}.%(ext)s"),
     f"https://www.youtube.com/watch?v={video_id}",]
     try:
-        res = subprocess.run(cmd, capture_output=True, text=True, timeout=480)
+        res = _run_ytdlp(cmd, timeout=480)
         if res.stderr and res.returncode != 0:
             log.warning("yt-dlp live chat stderr %s: %s", video_id, res.stderr.strip()[:1500])
     except Exception as e:
