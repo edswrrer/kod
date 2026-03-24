@@ -167,6 +167,9 @@ _DEFAULT_CFG = {
     "retrain_threshold":    500,
     "new_account_months":   6,
     "chromium_binary":      "",
+    "chromium_user_data_dir": "",
+    "chromium_profile_directory": "Default",
+    "manual_login_timeout_sec": 180,
     "cookies_file":         "",
     "cookies_from_browser": "",
 }
@@ -698,6 +701,13 @@ def make_driver(headless: bool = False):
         opts.add_argument("--mute-audio")
         opts.add_experimental_option("excludeSwitches", ["enable-logging"])
 
+        user_data_dir = (CFG.get("chromium_user_data_dir") or "").strip()
+        profile_dir = (CFG.get("chromium_profile_directory") or "Default").strip()
+        if user_data_dir:
+            opts.add_argument(f"--user-data-dir={user_data_dir}")
+            opts.add_argument(f"--profile-directory={profile_dir}")
+            log.info("✅ Chromium kalıcı profil ile başlatılıyor: %s / %s", user_data_dir, profile_dir)
+
         chrome_bin = (CFG.get("chromium_binary") or os.environ.get("CHROMIUM_BIN") or "").strip()
         if chrome_bin and _is_chromium_binary(chrome_bin):
             opts.binary_location = chrome_bin
@@ -722,8 +732,28 @@ def make_driver(headless: bool = False):
 def yt_login(driver, email: str, password: str) -> bool:
     if not driver: return False
     try:
+        driver.get("https://www.youtube.com")
+        time.sleep(2)
+        if "youtube.com" in (driver.current_url or "") and "accounts.google.com" not in (driver.current_url or ""):
+            log.info("✅ YouTube oturumu mevcut görünüyor, yeniden giriş atlandı")
+            return True
+
         driver.get("https://accounts.google.com/signin")
         wait = WebDriverWait(driver, 25)
+
+        if not email or not password:
+            timeout_sec = int(CFG.get("manual_login_timeout_sec", 180) or 180)
+            deadline = time.time() + timeout_sec
+            log.warning("ℹ️ Otomatik giriş kapalı: lütfen tarayıcıda MANUEL giriş yapın (zaman aşımı: %ss)", timeout_sec)
+            while time.time() < deadline:
+                cur = (driver.current_url or "").lower()
+                if "youtube.com" in cur and "accounts.google.com" not in cur:
+                    log.info("✅ Manuel giriş başarıyla algılandı")
+                    return True
+                time.sleep(2)
+            log.error("⛔ Manuel giriş zaman aşımına uğradı")
+            return False
+
         # E-posta
         ef = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR,"input[type='email']")))
         ef.clear(); ef.send_keys(email); ef.send_keys(Keys.RETURN)
