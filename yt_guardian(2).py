@@ -19,8 +19,8 @@ KURULUM (Ubuntu):
 KONFİGÜRASYON:
   yt_guardian_config.json dosyası oluşturun (örnek aşağıda):
   {
-    "yt_email": "kullanici@hotmail.com",
-    "yt_password": "PAROLANIZ",
+    "yt_email": "",
+    "yt_password": "",
     "channel_url": "https://www.youtube.com/@ShmirchikArt/streams",
     "channel_handle": "@ShmirchikArt",
     "db_path": "yt_guardian.db",
@@ -36,8 +36,16 @@ KONFİGÜRASYON:
     "bot_threshold": 0.70,
     "hate_threshold": 0.65,
     "stalker_threshold": 0.55,
-    "device": "auto"
+    "device": "auto",
+    "allow_destructive_actions": false,
+    "require_env_credentials": true
   }
+
+GÜVENLİK NOTU:
+  YouTube kimlik bilgilerini config dosyasına düz metin olarak yazmayın.
+  Tercih edilen yöntem:
+    export YT_EMAIL="mail@domain.com"
+    export YT_PASSWORD="..."
 """
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -45,6 +53,7 @@ KONFİGÜRASYON:
 # ═══════════════════════════════════════════════════════════════════════════════
 import os, sys, re, json, time, math, hashlib, threading, logging, unicodedata
 import sqlite3, subprocess, collections, random, copy, traceback, argparse
+import secrets
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from collections import Counter, deque
@@ -178,7 +187,7 @@ DEFAULT_CONFIG = {
     "ollama_model":       "phi4:14b",
     "ollama_host":        "http://localhost:11434",
     "flask_port":         5000,
-    "flask_secret":       "yt_guardian_secret_2024",
+    "flask_secret":       os.environ.get("FLASK_SECRET", ""),
     "date_from":          "2023-01-01",
     "date_to":            "2026-12-31",
     "similarity_threshold": 0.65,
@@ -188,6 +197,8 @@ DEFAULT_CONFIG = {
     "device":             "auto",
     "fasttext_model":     "lid.176.bin",
     "retrain_threshold":  500,
+    "allow_destructive_actions": False,   # Silme/ban gibi işlemler için güvenlik kapısı
+    "require_env_credentials":  True,     # Kimlik bilgisi env'den gelmeli
 }
 
 def load_config(config_file: str = "yt_guardian_config.json") -> dict:
@@ -197,10 +208,28 @@ def load_config(config_file: str = "yt_guardian_config.json") -> dict:
             user_cfg = json.load(f)
         cfg.update(user_cfg)
     # Env override
-    for key in ["yt_email", "yt_password"]:
-        env_val = os.environ.get(key.upper(), "")
+    env_map = {
+        "yt_email": "YT_EMAIL",
+        "yt_password": "YT_PASSWORD",
+        "channel_url": "YT_CHANNEL_URL",
+        "channel_handle": "YT_CHANNEL_HANDLE",
+        "db_path": "YT_DB_PATH",
+        "flask_secret": "FLASK_SECRET",
+        "ollama_model": "OLLAMA_MODEL",
+        "ollama_host": "OLLAMA_HOST",
+    }
+    for key, env_key in env_map.items():
+        env_val = os.environ.get(env_key, "")
         if env_val:
             cfg[key] = env_val
+    # Güvenlik: require_env_credentials açıksa dosyadaki düz metin credentialları yok say
+    if cfg.get("require_env_credentials", True):
+        if not os.environ.get("YT_EMAIL"):
+            cfg["yt_email"] = ""
+        if not os.environ.get("YT_PASSWORD"):
+            cfg["yt_password"] = ""
+    if not cfg.get("flask_secret"):
+        cfg["flask_secret"] = secrets.token_hex(32)
     return cfg
 
 CONFIG = load_config()
@@ -231,6 +260,50 @@ THREAT_LABELS_ZEROSHOT = [
 BOT_ZEROSHOT_LABELS = ["human-like conversation", "spam or bot-like message"]
 
 ACTION_NAMES = {0: "HUMAN", 1: "BOT", 2: "HATER", 3: "STALKER", 4: "IMPERSONATOR", 5: "COORDINATED"}
+
+def destructive_actions_enabled() -> bool:
+    """Silme/ban gibi yıkıcı işlemler için global güvenlik anahtarı."""
+    return bool(CONFIG.get("allow_destructive_actions", False))
+
+def build_deletion_candidates(limit: int = 300) -> List[dict]:
+    """
+    Mevcut analizlerden hareketle moderatör inceleme kuyruğu oluşturur.
+    Not: Bu fonksiyon otomatik silme yapmaz, sadece öneri üretir.
+    """
+    sql = """
+    SELECT
+      m.id, m.video_id, m.author, m.message, m.timestamp,
+      COALESCE(u.threat_score,0) AS threat_score,
+      COALESCE(u.hate_score,0)   AS hate_score,
+      COALESCE(u.bot_prob,0)     AS bot_prob,
+      COALESCE(u.stalker_score,0) AS stalker_score,
+      COALESCE(u.threat_level,'GREEN') AS threat_level
+    FROM messages m
+    LEFT JOIN users u ON u.author = m.author
+    WHERE m.deleted = 0
+    ORDER BY (COALESCE(u.threat_score,0)*0.45 +
+              COALESCE(u.hate_score,0)*0.30 +
+              COALESCE(u.bot_prob,0)*0.15 +
+              COALESCE(u.stalker_score,0)*0.10) DESC, m.timestamp DESC
+    LIMIT ?
+    """
+    rows = db_exec(sql, (int(limit),), fetch="all") or []
+    out = []
+    for r in rows:
+        d = dict(r)
+        score = (float(d.get("threat_score", 0))*0.45 +
+                 float(d.get("hate_score", 0))*0.30 +
+                 float(d.get("bot_prob", 0))*0.15 +
+                 float(d.get("stalker_score", 0))*0.10)
+        decision = "REVIEW"
+        if score >= 0.80:
+            decision = "HIGH_RISK_REVIEW"
+        elif score >= 0.65:
+            decision = "MEDIUM_RISK_REVIEW"
+        d["delete_candidate_score"] = round(score, 4)
+        d["decision"] = decision
+        out.append(d)
+    return out
 
 # Oyun kuramı ödül matrisi  [moderatör_idx][aktör_idx] = (mod_payoff, aktör_payoff)
 PAYOFF_MATRIX = np.array([
@@ -359,9 +432,49 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_msg_video    ON messages(video_id);
         CREATE INDEX IF NOT EXISTS idx_msg_ts       ON messages(timestamp);
         CREATE INDEX IF NOT EXISTS idx_up_threat    ON user_profiles(threat_level);
-        CREATE INDEX IF NOT EXISTS idx_link_ab      ON identity_links(user_a, user_b);
         """)
+        _run_schema_migrations(conn)
     log.info("✅ SQLite veritabanı hazır: %s", DB_PATH)
+
+def _table_columns(conn: sqlite3.Connection, table_name: str) -> set:
+    rows = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+    return {r[1] for r in rows} if rows else set()
+
+def _ensure_column(conn: sqlite3.Connection, table_name: str, col_name: str, col_sql: str):
+    cols = _table_columns(conn, table_name)
+    if col_name not in cols:
+        conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {col_name} {col_sql}")
+
+def _run_schema_migrations(conn: sqlite3.Connection):
+    """
+    Eski DB dosyaları için geriye dönük uyumluluk migrasyonları.
+    no such column hatalarını önlemek için index/table kolonlarını doğrular.
+    """
+    # identity_links eski şemadan geliyorsa eksik kolonları tamamla
+    if _table_columns(conn, "identity_links"):
+        _ensure_column(conn, "identity_links", "user_a", "TEXT")
+        _ensure_column(conn, "identity_links", "user_b", "TEXT")
+        _ensure_column(conn, "identity_links", "sim_score", "REAL")
+        _ensure_column(conn, "identity_links", "method", "TEXT")
+        _ensure_column(conn, "identity_links", "confidence", "REAL")
+        _ensure_column(conn, "identity_links", "created_at", "INTEGER DEFAULT (strftime('%s','now'))")
+    else:
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS identity_links (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_a      TEXT NOT NULL,
+            user_b      TEXT NOT NULL,
+            sim_score   REAL,
+            method      TEXT,
+            confidence  REAL,
+            created_at  INTEGER DEFAULT (strftime('%s','now'))
+        );
+        """)
+
+    # index sadece ilgili kolonlar gerçekten varsa oluştur
+    id_cols = _table_columns(conn, "identity_links")
+    if {"user_a", "user_b"}.issubset(id_cols):
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_link_ab ON identity_links(user_a, user_b)")
 
 def db_exec(sql: str, params: tuple = (), fetch: str = None):
     with _db_lock:
@@ -3205,9 +3318,27 @@ def create_app():
         rows = db_exec("SELECT * FROM identity_links ORDER BY sim_score DESC LIMIT 200",fetch="all") or []
         return jsonify({"links":[dict(r) for r in rows]})
 
+    # ── Silme aday kuyruğu (otomatik silme yok) ──────────────────────────────
+    @app.route("/api/review/delete-candidates")
+    def api_review_delete_candidates():
+        limit = int(request.args.get("limit", "300") or 300)
+        limit = max(1, min(limit, 2000))
+        candidates = build_deletion_candidates(limit)
+        return jsonify({
+            "success": True,
+            "count": len(candidates),
+            "allow_destructive_actions": destructive_actions_enabled(),
+            "candidates": candidates
+        })
+
     # ── Yorum silme ───────────────────────────────────────────────────────────
     @app.route("/api/delete/comment", methods=["POST"])
     def api_delete_comment():
+        if not destructive_actions_enabled():
+            return jsonify({
+                "success": False,
+                "error": "Güvenlik nedeniyle silme kapalı. allow_destructive_actions=true yapın."
+            }), 403
         video_id  = request.form.get("video_id","")
         author    = request.form.get("author","")
         message   = request.form.get("message","")
@@ -3226,6 +3357,11 @@ def create_app():
 
     @app.route("/api/delete/live", methods=["POST"])
     def api_delete_live():
+        if not destructive_actions_enabled():
+            return jsonify({
+                "success": False,
+                "error": "Güvenlik nedeniyle canlı chat silme kapalı. allow_destructive_actions=true yapın."
+            }), 403
         video_id = request.form.get("video_id","")
         author   = request.form.get("author","")
         message  = request.form.get("message","")
@@ -3241,6 +3377,15 @@ def create_app():
         global _selenium_driver
         email = request.form.get("email", CONFIG.get("yt_email",""))
         password = request.form.get("password", CONFIG.get("yt_password",""))
+        if CONFIG.get("require_env_credentials", True):
+            env_email = os.environ.get("YT_EMAIL", "")
+            env_password = os.environ.get("YT_PASSWORD", "")
+            if not env_email or not env_password:
+                return jsonify({
+                    "success": False,
+                    "message": "YT_EMAIL ve YT_PASSWORD ortam değişkenleri gerekli (require_env_credentials=true)."
+                }), 400
+            email, password = env_email, env_password
         if not email or not password:
             return jsonify({"success":False,"message":"Email ve şifre gerekli"})
         def _login_bg():
@@ -3411,15 +3556,15 @@ def run_cli_scrape():
     log.info("✅ Analiz tamamlandı")
 
 def main():
+    global CONFIG
     parser = argparse.ArgumentParser(description="YT Guardian v2.0")
     parser.add_argument("--scrape", action="store_true", help="Sadece tarama yap (web panel başlatma)")
-    parser.add_argument("--port", type=int, default=CONFIG.get("flask_port",5000))
+    parser.add_argument("--port", type=int, default=5000)
     parser.add_argument("--config", type=str, default="yt_guardian_config.json")
     parser.add_argument("--analyze-all", action="store_true", help="Tüm kullanıcıları analiz et")
     args = parser.parse_args()
 
     # Konfigürasyon dosyası belirtilmişse yeniden yükle
-    global CONFIG
     CONFIG = load_config(args.config)
 
     bootstrap()
