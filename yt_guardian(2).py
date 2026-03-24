@@ -53,6 +53,7 @@ GÜVENLİK NOTU:
 # ═══════════════════════════════════════════════════════════════════════════════
 import os, sys, re, json, time, math, hashlib, threading, logging, unicodedata
 import sqlite3, subprocess, collections, random, copy, traceback, argparse
+import secrets
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from collections import Counter, deque
@@ -186,7 +187,7 @@ DEFAULT_CONFIG = {
     "ollama_model":       "phi4:14b",
     "ollama_host":        "http://localhost:11434",
     "flask_port":         5000,
-    "flask_secret":       "yt_guardian_secret_2024",
+    "flask_secret":       os.environ.get("FLASK_SECRET", ""),
     "date_from":          "2023-01-01",
     "date_to":            "2026-12-31",
     "similarity_threshold": 0.65,
@@ -207,8 +208,18 @@ def load_config(config_file: str = "yt_guardian_config.json") -> dict:
             user_cfg = json.load(f)
         cfg.update(user_cfg)
     # Env override
-    for key in ["yt_email", "yt_password"]:
-        env_val = os.environ.get(key.upper(), "")
+    env_map = {
+        "yt_email": "YT_EMAIL",
+        "yt_password": "YT_PASSWORD",
+        "channel_url": "YT_CHANNEL_URL",
+        "channel_handle": "YT_CHANNEL_HANDLE",
+        "db_path": "YT_DB_PATH",
+        "flask_secret": "FLASK_SECRET",
+        "ollama_model": "OLLAMA_MODEL",
+        "ollama_host": "OLLAMA_HOST",
+    }
+    for key, env_key in env_map.items():
+        env_val = os.environ.get(env_key, "")
         if env_val:
             cfg[key] = env_val
     # Güvenlik: require_env_credentials açıksa dosyadaki düz metin credentialları yok say
@@ -419,9 +430,49 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_msg_video    ON messages(video_id);
         CREATE INDEX IF NOT EXISTS idx_msg_ts       ON messages(timestamp);
         CREATE INDEX IF NOT EXISTS idx_up_threat    ON user_profiles(threat_level);
-        CREATE INDEX IF NOT EXISTS idx_link_ab      ON identity_links(user_a, user_b);
         """)
+        _run_schema_migrations(conn)
     log.info("✅ SQLite veritabanı hazır: %s", DB_PATH)
+
+def _table_columns(conn: sqlite3.Connection, table_name: str) -> set:
+    rows = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+    return {r[1] for r in rows} if rows else set()
+
+def _ensure_column(conn: sqlite3.Connection, table_name: str, col_name: str, col_sql: str):
+    cols = _table_columns(conn, table_name)
+    if col_name not in cols:
+        conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {col_name} {col_sql}")
+
+def _run_schema_migrations(conn: sqlite3.Connection):
+    """
+    Eski DB dosyaları için geriye dönük uyumluluk migrasyonları.
+    no such column hatalarını önlemek için index/table kolonlarını doğrular.
+    """
+    # identity_links eski şemadan geliyorsa eksik kolonları tamamla
+    if _table_columns(conn, "identity_links"):
+        _ensure_column(conn, "identity_links", "user_a", "TEXT")
+        _ensure_column(conn, "identity_links", "user_b", "TEXT")
+        _ensure_column(conn, "identity_links", "sim_score", "REAL")
+        _ensure_column(conn, "identity_links", "method", "TEXT")
+        _ensure_column(conn, "identity_links", "confidence", "REAL")
+        _ensure_column(conn, "identity_links", "created_at", "INTEGER DEFAULT (strftime('%s','now'))")
+    else:
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS identity_links (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_a      TEXT NOT NULL,
+            user_b      TEXT NOT NULL,
+            sim_score   REAL,
+            method      TEXT,
+            confidence  REAL,
+            created_at  INTEGER DEFAULT (strftime('%s','now'))
+        );
+        """)
+
+    # index sadece ilgili kolonlar gerçekten varsa oluştur
+    id_cols = _table_columns(conn, "identity_links")
+    if {"user_a", "user_b"}.issubset(id_cols):
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_link_ab ON identity_links(user_a, user_b)")
 
 def db_exec(sql: str, params: tuple = (), fetch: str = None):
     with _db_lock:
