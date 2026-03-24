@@ -228,8 +228,6 @@ def load_config(config_file: str = "yt_guardian_config.json") -> dict:
             cfg["yt_email"] = ""
         if not os.environ.get("YT_PASSWORD"):
             cfg["yt_password"] = ""
-    if not cfg.get("flask_secret"):
-        cfg["flask_secret"] = secrets.token_hex(32)
     return cfg
 
 CONFIG = load_config()
