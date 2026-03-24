@@ -342,12 +342,27 @@ def _migrate_legacy_schema(conn: sqlite3.Connection):
                 log.error("DB migration başarısız: author kolonu oluşturulamadı: %s", e2)
 
     cols = _table_columns(conn, "user_profiles")
-    if "pagerank_score" not in cols:
+    required_user_profile_columns = {
+        # Eski veritabanlarında bulunmayan ama yeni kod yollarında kullanılan kolonlar.
+        # Bu listeyi tek merkezde tutarak query bazlı "hard-code" kırılmalarını önleriz.
+        "author_cid": "TEXT",
+        "subscriber_count": "INTEGER DEFAULT 0",
+        "account_created": "TEXT",
+        "is_new_account": "INTEGER DEFAULT 0",
+        "video_count": "INTEGER DEFAULT 0",
+        "pagerank_score": "REAL DEFAULT 0.0",
+        "ollama_summary": "TEXT",
+        "ollama_action": "TEXT DEFAULT 'MONITOR'",
+    }
+
+    for col_name, col_def in required_user_profile_columns.items():
+        if col_name in cols:
+            continue
         try:
-            conn.execute("ALTER TABLE user_profiles ADD COLUMN pagerank_score REAL DEFAULT 0.0")
-            log.info("✅ DB migration: user_profiles.pagerank_score eklendi")
+            conn.execute(f"ALTER TABLE user_profiles ADD COLUMN {col_name} {col_def}")
+            log.info("✅ DB migration: user_profiles.%s eklendi", col_name)
         except Exception as e:
-            log.warning("pagerank_score kolonu eklenemedi: %s", e)
+            log.warning("user_profiles.%s kolonu eklenemedi: %s", col_name, e)
 
 def db_exec(sql: str, params: tuple = (), fetch: str = None):
     with _db_lock:
