@@ -153,6 +153,7 @@ _DEFAULT_CFG = {
     "fasttext_model":       "lid.176.bin",
     "retrain_threshold":    500,
     "new_account_months":   6,
+    "firefox_binary":       "",
 }
 
 def load_config(cfg_file: str = "yt_guardian_config.json") -> dict:
@@ -295,8 +296,12 @@ def db_exec(sql: str, params: tuple = (), fetch: str = None):
     with _db_lock:
         with _get_conn() as c:
             cur = c.execute(sql, params)
-            if fetch == "one": return cur.fetchone()
-            if fetch == "all": return cur.fetchall()
+            if fetch == "one":
+                row = cur.fetchone()
+                return dict(row) if row else None
+            if fetch == "all":
+                rows = cur.fetchall()
+                return [dict(r) for r in rows]
             return cur.lastrowid
 
 def upsert_message(msg: dict):
@@ -501,14 +506,35 @@ _driver    = None
 _drv_lock  = threading.Lock()
 _acct_cache: Dict[str,dict] = {}
 
+def _sanitize_firefox_env():
+    bad = []
+    for key in ("FIREFOX_BINARY", "MOZ_FIREFOX_BINARY"):
+        val = os.environ.get(key, "").strip()
+        if not val:
+            continue
+        p = Path(val)
+        if not p.exists() or p.is_dir() or not os.access(str(p), os.X_OK):
+            bad.append((key, val))
+            os.environ.pop(key, None)
+    for key, val in bad:
+        log.warning("Geçersiz %s temizlendi: %s", key, val)
+
 def make_driver(headless: bool = False):
     if not _SELENIUM: return None
     try:
+        _sanitize_firefox_env()
         opts = FFOptions()
         if headless: opts.add_argument("--headless")
         opts.set_preference("dom.webnotifications.enabled", False)
         opts.set_preference("media.volume_scale","0.0")
         opts.set_preference("browser.download.folderList", 2)
+        ff_bin = (CFG.get("firefox_binary") or os.environ.get("FIREFOX_BIN") or "").strip()
+        if ff_bin:
+            p = Path(ff_bin)
+            if p.exists() and p.is_file() and os.access(str(p), os.X_OK):
+                opts.binary_location = str(p)
+            else:
+                log.warning("firefox_binary geçersiz, varsayılan aranacak: %s", ff_bin)
         drv = webdriver.Firefox(options=opts)
         drv.set_page_load_timeout(60)
         log.info("✅ Firefox WebDriver başlatıldı")
@@ -537,27 +563,61 @@ def yt_login(driver, email: str, password: str) -> bool:
     except Exception as e:
         log.error("YouTube girişi hatası: %s", e); return False
 
+def _candidate_channel_urls(channel_url: str) -> List[str]:
+    url = (channel_url or "").strip().rstrip("/")
+    if not url:
+        return []
+    candidates = [url]
+
+    # YouTube sekme URL'leri (streams/videos/live) bazen extractor'da farklı davranır.
+    if any(url.endswith(sfx) for sfx in ("/streams", "/videos", "/live")):
+        base = url.rsplit("/", 1)[0]
+        for sfx in ("/streams", "/videos", "/live"):
+            cand = base + sfx
+            if cand not in candidates:
+                candidates.append(cand)
+        if base not in candidates:
+            candidates.append(base)
+
+    return candidates
+
+
 def ytdlp_list_videos(channel_url: str, date_from: str, date_to: str) -> List[Dict]:
-    cmd = [sys.executable,"-m","yt_dlp",
-           "--flat-playlist","--no-download","--ignore-errors","--no-warnings",
-           "--print","%(id)s\t%(title)s\t%(upload_date)s",
-           "--dateafter",  date_from.replace("-",""),
-           "--datebefore", date_to.replace("-",""),
-           channel_url]
-    try:
-        res = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
-        videos = []
-        for line in res.stdout.strip().split("\n"):
-            parts = line.split("\t")
-            if len(parts) >= 1 and len(parts[0].strip()) == 11:
+    date_after = date_from.replace("-", "")
+    date_before = date_to.replace("-", "")
+    videos = []
+    seen_ids = set()
+
+    for src_url in _candidate_channel_urls(channel_url):
+        cmd = [sys.executable, "-m", "yt_dlp",
+               "--flat-playlist", "--no-download", "--ignore-errors", "--no-warnings",
+               "--print", "%(id)s\t%(title)s\t%(upload_date)s",
+               "--dateafter", date_after,
+               "--datebefore", date_before,
+               src_url]
+        try:
+            res = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+            found_here = 0
+            for line in (res.stdout or "").splitlines():
+                parts = line.split("\t")
+                if not parts:
+                    continue
                 vid_id = parts[0].strip()
-                title  = parts[1].strip() if len(parts) > 1 else ""
-                date   = parts[2].strip() if len(parts) > 2 else ""
-                videos.append({"video_id":vid_id,"title":title,"video_date":date})
-        log.info("yt-dlp: %d video bulundu", len(videos))
-        return videos
-    except Exception as e:
-        log.error("yt-dlp video listesi hatası: %s", e); return []
+                if len(vid_id) != 11 or vid_id in seen_ids:
+                    continue
+                title = parts[1].strip() if len(parts) > 1 else ""
+                date = parts[2].strip() if len(parts) > 2 else ""
+                videos.append({"video_id": vid_id, "title": title, "video_date": date})
+                seen_ids.add(vid_id)
+                found_here += 1
+            log.info("yt-dlp kaynak denemesi: %s -> %d video", src_url, found_here)
+            if videos:
+                break
+        except Exception as e:
+            log.error("yt-dlp video listesi hatası (%s): %s", src_url, e)
+
+    log.info("yt-dlp: %d video bulundu", len(videos))
+    return videos
 
 def ytdlp_comments(video_id: str, title: str = "", video_date: str = "",
                     source_type: str = "comment") -> List[Dict]:
