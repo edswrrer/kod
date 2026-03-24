@@ -2407,15 +2407,15 @@ body{background:var(--bg);color:var(--text);font-family:'Segoe UI',sans-serif;fo
 <div id="app">
 <div id="sidebar">
   <h1>🛡️ YT Guardian<br><span style="color:var(--text2);font-weight:400">@ShmirchikArt</span></h1>
-  <div class="nav-item active" onclick="showTab('dashboard')"><span class="icon">📊</span>Dashboard</div>
-  <div class="nav-item" onclick="showTab('users')"><span class="icon">👥</span>Kullanıcılar</div>
-  <div class="nav-item" onclick="showTab('messages')"><span class="icon">💬</span>Mesajlar</div>
-  <div class="nav-item" onclick="showTab('graph')"><span class="icon">🔗</span>İlişki Ağı</div>
-  <div class="nav-item" onclick="showTab('live')"><span class="icon">⚡</span>Canlı Yayın</div>
-  <div class="nav-item" onclick="showTab('search')"><span class="icon">🔍</span>Arama</div>
-  <div class="nav-item" onclick="showTab('stats')"><span class="icon">📈</span>İstatistikler</div>
-  <div class="nav-item" onclick="showTab('dataset')"><span class="icon">🗃️</span>Dataset</div>
-  <div class="nav-item" onclick="showTab('settings')"><span class="icon">⚙️</span>Ayarlar</div>
+  <div class="nav-item active" onclick="showTab('dashboard', this)"><span class="icon">📊</span>Dashboard</div>
+  <div class="nav-item" onclick="showTab('users', this)"><span class="icon">👥</span>Kullanıcılar</div>
+  <div class="nav-item" onclick="showTab('messages', this)"><span class="icon">💬</span>Mesajlar</div>
+  <div class="nav-item" onclick="showTab('graph', this)"><span class="icon">🔗</span>İlişki Ağı</div>
+  <div class="nav-item" onclick="showTab('live', this)"><span class="icon">⚡</span>Canlı Yayın</div>
+  <div class="nav-item" onclick="showTab('search', this)"><span class="icon">🔍</span>Arama</div>
+  <div class="nav-item" onclick="showTab('stats', this)"><span class="icon">📈</span>İstatistikler</div>
+  <div class="nav-item" onclick="showTab('dataset', this)"><span class="icon">🗃️</span>Dataset</div>
+  <div class="nav-item" onclick="showTab('settings', this)"><span class="icon">⚙️</span>Ayarlar</div>
 </div>
 <div id="main">
   <div id="topbar">
@@ -2493,7 +2493,12 @@ body{background:var(--bg);color:var(--text);font-family:'Segoe UI',sans-serif;fo
           <option value="replay_chat">Replay Chat</option>
           <option value="live">Canlı</option>
         </select>
+        <button class="btn btn-outline" onclick="loadDeleteCandidates()">🧪 Silme Adayları</button>
         <span id="msg-count" style="color:var(--text2);font-size:11px"></span>
+      </div>
+      <div class="card" id="delete-candidates-card" style="display:none">
+        <h3>Silme İnceleme Kuyruğu</h3>
+        <div id="delete-candidates-list"></div>
       </div>
       <div id="messages-list"></div>
       <div class="pagination" id="messages-pagination"></div>
@@ -2613,11 +2618,16 @@ let graphData = null, threatChart = null, timelineChart = null;
 let currentLiveVideoId = '';
 
 // ─── NAVİGASYON ─────────────────────────────────────────────────────────────
-function showTab(name) {
+function showTab(name, navEl=null) {
   document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
   document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
   document.getElementById('tab-'+name).classList.add('active');
-  event.currentTarget.classList.add('active');
+  if(navEl) {
+    navEl.classList.add('active');
+  } else {
+    const nav = document.querySelector(`.nav-item[onclick*="showTab('${name}'"]`);
+    if(nav) nav.classList.add('active');
+  }
   if(name==='dashboard') loadDashboard();
   else if(name==='users') loadUsers();
   else if(name==='messages') loadMessages();
@@ -2838,9 +2848,36 @@ function highlight(text, query) {
 
 function loadUserMessages(author) {
   closeModal();
-  showTab('messages');
+  showTab('messages', document.querySelector(`.nav-item[onclick*="showTab('messages'"]`));
   $('#msg-author').val(author);
   loadMessages(1);
+}
+
+function loadDeleteCandidates() {
+  $('#delete-candidates-card').show();
+  $('#delete-candidates-list').html('<div class="loader"></div>');
+  $.get('/api/review/delete-candidates', {limit: 200}, function(d) {
+    const actionsEnabled = !!d.allow_destructive_actions;
+    const rows = d.candidates || [];
+    let html = `<div style="margin-bottom:8px;color:var(--text2);font-size:12px">
+      ${rows.length} aday bulundu • Otomatik silme: ${actionsEnabled ? 'Açık' : 'Kapalı (güvenlik modu)'}
+    </div>`;
+    rows.slice(0,100).forEach(item => {
+      html += `<div class="msg-item">
+        <div class="meta">
+          <span class="threat-badge t-${item.threat_level||'RED'}">${item.threat_level||'RED'}</span>
+          <span style="color:var(--accent)">@${item.author||'unknown'}</span>
+          <span>${item.video_id||''}</span>
+          <span style="color:var(--text2)">${((item.threat_score||0)*100).toFixed(0)}%</span>
+        </div>
+        <div class="text">${highlight(item.message||'', $('#msg-filter').val())}</div>
+      </div>`;
+    });
+    $('#delete-candidates-list').html(html || '<p style="color:var(--text2)">Aday bulunamadı</p>');
+  }).fail(function(xhr){
+    const err = xhr?.responseJSON?.error || 'Silme adayları yüklenemedi';
+    $('#delete-candidates-list').html('<p style="color:var(--red)">❌ '+err+'</p>');
+  });
 }
 
 function deleteMsg(videoId, author, msgPreview) {
@@ -2848,6 +2885,9 @@ function deleteMsg(videoId, author, msgPreview) {
   $.post('/api/delete/comment', {video_id:videoId, author:author, message:msgPreview}, function(d) {
     setStatus(d.success ? '✅ Yorum silindi' : '❌ '+d.error);
     loadMessages();
+  }).fail(function(xhr){
+    const err = xhr?.responseJSON?.error || 'Silme isteği başarısız';
+    setStatus('❌ '+err);
   });
 }
 
@@ -2914,8 +2954,15 @@ function startLiveMonitor() {
   if(!vid || vid.length!==11) { alert('Geçerli bir Video ID girin (11 karakter)'); return; }
   currentLiveVideoId = vid;
   $.post('/api/live/start', {video_id:vid}, function(d) {
-    setStatus('⚡ Canlı monitör başlatıldı: '+vid);
-    $('#live-indicator').show();
+    if(d.success){
+      setStatus('⚡ Canlı monitör başlatıldı: '+vid);
+      $('#live-indicator').show();
+    } else {
+      setStatus('❌ '+(d.error||'Canlı monitör başlatılamadı'));
+    }
+  }).fail(function(xhr){
+    const err = xhr?.responseJSON?.error || 'Canlı monitör isteği başarısız';
+    setStatus('❌ '+err);
   });
 }
 
@@ -2946,6 +2993,9 @@ socket.on('live_alert', function(data) {
 function deleteLiveMsg(videoId, author, msgPreview) {
   $.post('/api/delete/live', {video_id:videoId, author:author, message:msgPreview}, function(d) {
     setStatus(d.success ? '✅ Canlı mesaj silindi' : '❌ '+d.error);
+  }).fail(function(xhr){
+    const err = xhr?.responseJSON?.error || 'Canlı mesaj silinemedi';
+    setStatus('❌ '+err);
   });
 }
 
@@ -3079,23 +3129,47 @@ function loadStatus() {
 
 function ytLogin() {
   const email = $('#yt-email').val(); const pass = $('#yt-pass').val();
-  if(!email||!pass){alert('Email ve şifre gerekli');return;}
   $('#login-status').text('Giriş yapılıyor...');
   $.post('/api/yt/login', {email:email, password:pass}, function(d) {
     $('#login-status').css('color',d.success?'var(--green)':'var(--red)').text(d.message);
+  }).fail(function(xhr){
+    const msg = xhr?.responseJSON?.message || 'Giriş isteği başarısız';
+    $('#login-status').css('color','var(--red)').text(msg);
   });
 }
 
 function startScrape() {
-  setStatus('Scrape başlıyor...');
+  setStatus('Scrape başlıyor (arka plan)...');
   $.post('/api/scrape', {}, function(d) {
-    setStatus('✅ Tarama tamamlandı — '+d.total_messages+' mesaj');
-    loadDashboard();
+    if(d.success) setStatus('🧹 Tarama arka planda çalışıyor...');
+    else setStatus('❌ '+(d.message||'Tarama başlatılamadı'));
   }).fail(function(){setStatus('❌ Tarama hatası')});
 }
 
 // ─── YARDIMCI ─────────────────────────────────────────────────────────────────
 function setStatus(msg) { $('#status-msg').text(msg); }
+socket.on('connected', function() { setStatus('WebSocket bağlı'); });
+socket.on('login_result', function(data) {
+  const ok = !!data.success;
+  $('#login-status').css('color', ok ? 'var(--green)' : 'var(--red)')
+                    .text(ok ? '✅ Giriş başarılı' : '❌ Giriş başarısız');
+  setStatus(ok ? '✅ YouTube oturumu açıldı' : '❌ YouTube giriş hatası');
+});
+socket.on('scrape_progress', function(data) {
+  const v = data.video_id ? (' ['+data.video_id+']') : '';
+  setStatus(`Tarama sürüyor${v} — +${data.new_messages||0} mesaj`);
+});
+socket.on('scrape_done', function(data) {
+  setStatus(`✅ Tarama tamamlandı — ${data.total_messages||0} mesaj`);
+  loadDashboard();
+  if($('#tab-messages').hasClass('active')) loadMessages();
+  if($('#tab-users').hasClass('active')) loadUsers();
+});
+socket.on('delete_result', function(data) {
+  const ok = !!data.success;
+  setStatus(ok ? '✅ Silme işlemi tamamlandı' : '❌ Silme işlemi başarısız');
+  if($('#tab-messages').hasClass('active')) loadMessages();
+});
 $(document).ready(function() { loadDashboard(); });
 $(document).on('keydown', function(e){ if(e.key==='Escape') closeModal(); });
 </script>
