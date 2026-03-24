@@ -38,16 +38,27 @@ KONFİGÜRASYON (yt_guardian_config.json — opsiyonel):
 # § 1 — IMPORTS
 # ═══════════════════════════════════════════════════════════════════════════════
 import os, sys, re, json, time, math, hashlib, threading, logging, unicodedata
+
+# 1) Imports bölümüne ekle
+import shutil
+
 import sqlite3, subprocess, argparse, random, traceback, base64
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from collections import Counter, deque
 from typing import Optional, List, Dict, Tuple, Any
-import warnings; warnings.filterwarnings("ignore")
+from unittest import result
+import warnings
 
+import socketio; warnings.filterwarnings("ignore")
+
+from flask import app
 import numpy as np
 from scipy import stats
-from scipy.spatial.distance import cosine as cosine_dist, wasserstein_distance
+from scipy.spatial.distance import cosine as cosine_dist
+from scipy.stats import wasserstein_distance
+
+
 from scipy.stats import entropy as scipy_entropy
 from sklearn.feature_extraction.text import TfidfVectorizer, CountVectorizer
 from sklearn.decomposition import LatentDirichletAllocation
@@ -131,6 +142,8 @@ logging.basicConfig(
 )
 log = logging.getLogger("YTG")
 
+
+# 2) _DEFAULT_CFG bloğunu bununla değiştir
 _DEFAULT_CFG = {
     "yt_email":             "physicus93@hotmail.com",
     "yt_password":          "%C7JdE4,)$MS;4'",
@@ -154,6 +167,8 @@ _DEFAULT_CFG = {
     "retrain_threshold":    500,
     "new_account_months":   6,
     "firefox_binary":       "",
+    "cookies_file":         "",
+    "cookies_from_browser": "firefox",
 }
 
 def load_config(cfg_file: str = "yt_guardian_config.json") -> dict:
@@ -519,28 +534,143 @@ def _sanitize_firefox_env():
     for key, val in bad:
         log.warning("Geçersiz %s temizlendi: %s", key, val)
 
+
+# 3) make_driver'dan önce bu yardımcıları ekle
+def _is_firefox_binary(path: str) -> bool:
+    if not path:
+        return False
+    try:
+        r = subprocess.run([path, "--version"], capture_output=True, text=True, timeout=8)
+        out = f"{r.stdout} {r.stderr}".lower()
+        return r.returncode == 0 and "firefox" in out
+    except Exception:
+        return False
+
+
+def _resolve_firefox_binary() -> str:
+    candidates = []
+
+    for key in ("FIREFOX_BINARY", "MOZ_FIREFOX_BINARY", "FIREFOX_BIN"):
+        v = os.environ.get(key, "").strip()
+        if v:
+            candidates.append(v)
+
+    for name in ("firefox", "firefox-esr", "firefox-bin"):
+        p = shutil.which(name)
+        if p:
+            candidates.append(p)
+
+    candidates.extend([
+        "/usr/bin/firefox",
+        "/usr/lib/firefox/firefox",
+        "/snap/bin/firefox",
+    ])
+
+    seen = set()
+    for cand in candidates:
+        if not cand or cand in seen:
+            continue
+        seen.add(cand)
+        p = Path(cand)
+        if p.exists() and p.is_file() and os.access(str(p), os.X_OK) and _is_firefox_binary(str(p)):
+            return str(p)
+
+    return ""
+
+
+def _yt_dlp_base_cmd() -> List[str]:
+    cmd = [
+        sys.executable, "-m", "yt_dlp",
+        "--no-warnings",
+        "--ignore-errors",
+        "--skip-download",
+    ]
+
+    cookie_file = (CFG.get("cookies_file") or "").strip()
+    if cookie_file and Path(cookie_file).exists():
+        cmd += ["--cookies", cookie_file]
+    else:
+        browser = (CFG.get("cookies_from_browser") or "").strip()
+        if browser:
+            cmd += ["--cookies-from-browser", browser]
+
+    return cmd
+
+
+def export_cookies_from_driver(driver, cookie_file: str = None) -> bool:
+    if not driver:
+        return False
+    path = Path(cookie_file or CFG.get("cookies_file", "") or (Path(CFG["data_dir"]) / "cookies.txt"))
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        cookies = driver.get_cookies()
+        if not cookies:
+            return False
+
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("# Netscape HTTP Cookie File\n")
+            for c in cookies:
+                domain = c.get("domain", "")
+                include_subdomains = "TRUE" if domain.startswith(".") else "FALSE"
+                pth = c.get("path", "/")
+                secure = "TRUE" if c.get("secure") else "FALSE"
+                expiry = int(c.get("expiry", 0) or 0)
+                name = c.get("name", "")
+                value = c.get("value", "")
+                f.write(
+                    f"{domain}\t{include_subdomains}\t{pth}\t{secure}\t{expiry}\t{name}\t{value}\n"
+                )
+
+        CFG["cookies_file"] = str(path)
+        log.info("✅ Cookies export edildi: %s", path)
+        return True
+    except Exception as e:
+        log.warning("Cookie export başarısız: %s", e)
+        return False
+        
+
+        
+        
+        
+        
+        
+
+## 4) make_driver() fonksiyonunu bununla değiştir
+# 2) make_driver() fonksiyonunu bununla değiştir
 def make_driver(headless: bool = False):
-    if not _SELENIUM: return None
+    if not _SELENIUM:
+        return None
     try:
         _sanitize_firefox_env()
+
         opts = FFOptions()
-        if headless: opts.add_argument("--headless")
+        if headless:
+            opts.add_argument("--headless")
+
         opts.set_preference("dom.webnotifications.enabled", False)
-        opts.set_preference("media.volume_scale","0.0")
+        opts.set_preference("media.volume_scale", "0.0")
         opts.set_preference("browser.download.folderList", 2)
+
         ff_bin = (CFG.get("firefox_binary") or os.environ.get("FIREFOX_BIN") or "").strip()
-        if ff_bin:
-            p = Path(ff_bin)
-            if p.exists() and p.is_file() and os.access(str(p), os.X_OK):
-                opts.binary_location = str(p)
+        if ff_bin and _is_firefox_binary(ff_bin):
+            opts.binary_location = ff_bin
+            log.info("✅ Firefox binary config/env üzerinden alındı: %s", ff_bin)
+        else:
+            resolved = _resolve_firefox_binary()
+            if resolved:
+                opts.binary_location = resolved
+                log.info("✅ Firefox binary otomatik bulundu: %s", resolved)
             else:
-                log.warning("firefox_binary geçersiz, varsayılan aranacak: %s", ff_bin)
+                log.warning("Firefox binary bulunamadı; Selenium Manager fallback deneniyor.")
+
         drv = webdriver.Firefox(options=opts)
         drv.set_page_load_timeout(60)
         log.info("✅ Firefox WebDriver başlatıldı")
         return drv
+
     except Exception as e:
-        log.error("Firefox başlatılamadı: %s", e); return None
+        log.error("Firefox başlatılamadı: %s", e)
+        return None
 
 def yt_login(driver, email: str, password: str) -> bool:
     if not driver: return False
@@ -563,16 +693,20 @@ def yt_login(driver, email: str, password: str) -> bool:
     except Exception as e:
         log.error("YouTube girişi hatası: %s", e); return False
 
+
+
+
+# 6) _candidate_channel_urls() ile ytdlp_list_videos() bloğunu bununla değiştir
 def _candidate_channel_urls(channel_url: str) -> List[str]:
     url = (channel_url or "").strip().rstrip("/")
     if not url:
         return []
+
     candidates = [url]
 
-    # YouTube sekme URL'leri (streams/videos/live) bazen extractor'da farklı davranır.
     if any(url.endswith(sfx) for sfx in ("/streams", "/videos", "/live")):
         base = url.rsplit("/", 1)[0]
-        for sfx in ("/streams", "/videos", "/live"):
+        for sfx in ("/videos", "/streams", "/live", ""):
             cand = base + sfx
             if cand not in candidates:
                 candidates.append(cand)
@@ -583,36 +717,76 @@ def _candidate_channel_urls(channel_url: str) -> List[str]:
 
 
 def ytdlp_list_videos(channel_url: str, date_from: str, date_to: str) -> List[Dict]:
-    date_after = date_from.replace("-", "")
-    date_before = date_to.replace("-", "")
+    date_after = (date_from or "").replace("-", "")
+    date_before = (date_to or "").replace("-", "")
+
     videos = []
     seen_ids = set()
 
     for src_url in _candidate_channel_urls(channel_url):
-        cmd = [sys.executable, "-m", "yt_dlp",
-               "--flat-playlist", "--no-download", "--ignore-errors", "--no-warnings",
-               "--print", "%(id)s\t%(title)s\t%(upload_date)s",
-               "--dateafter", date_after,
-               "--datebefore", date_before,
-               src_url]
+        cmd = _yt_dlp_base_cmd() + [
+            "--flat-playlist",
+            "--dump-single-json",
+            src_url,
+        ]
+
         try:
-            res = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+            res = subprocess.run(cmd, capture_output=True, text=True, timeout=240)
+
+            if res.stderr and res.returncode != 0:
+                log.warning("yt-dlp stderr (%s): %s", src_url, res.stderr.strip()[:1500])
+
+            payload = (res.stdout or "").strip()
+            if not payload:
+                log.info("yt-dlp kaynak denemesi: %s -> 0 video", src_url)
+                continue
+
+            data = json.loads(payload)
+            entries = data.get("entries") or []
             found_here = 0
-            for line in (res.stdout or "").splitlines():
-                parts = line.split("\t")
-                if not parts:
+
+            for e in entries:
+                if not isinstance(e, dict):
                     continue
-                vid_id = parts[0].strip()
+
+                vid_id = (e.get("id") or "").strip()
+                if not vid_id:
+                    continue
+
                 if len(vid_id) != 11 or vid_id in seen_ids:
                     continue
-                title = parts[1].strip() if len(parts) > 1 else ""
-                date = parts[2].strip() if len(parts) > 2 else ""
-                videos.append({"video_id": vid_id, "title": title, "video_date": date})
+
+                title = (e.get("title") or "").strip()
+                upload_date = (e.get("upload_date") or "").strip()
+                ts = int(e.get("timestamp") or e.get("release_timestamp") or 0 or 0)
+
+                # tarih filtresi Python tarafında: yt-dlp tarafındaki kırılgan filtreyi kaldırıyoruz
+                if date_after and upload_date and upload_date < date_after:
+                    continue
+                if date_before and upload_date and upload_date > date_before:
+                    continue
+
+                if not upload_date and ts:
+                    ds = datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y%m%d")
+                    if date_after and ds < date_after:
+                        continue
+                    if date_before and ds > date_before:
+                        continue
+
+                videos.append({
+                    "video_id": vid_id,
+                    "title": title,
+                    "video_date": upload_date,
+                })
                 seen_ids.add(vid_id)
                 found_here += 1
+
             log.info("yt-dlp kaynak denemesi: %s -> %d video", src_url, found_here)
             if videos:
                 break
+
+        except json.JSONDecodeError as e:
+            log.warning("yt-dlp JSON parse hatası (%s): %s", src_url, e)
         except Exception as e:
             log.error("yt-dlp video listesi hatası (%s): %s", src_url, e)
 
@@ -629,10 +803,11 @@ def ytdlp_comments(video_id: str, title: str = "", video_date: str = "",
             return json.load(open(cache, encoding="utf-8"))
         except: pass
     # yt-dlp ile yorumları indir
-    cmd = [sys.executable,"-m","yt_dlp",
-           "--write-comments","--skip-download","--no-warnings","--quiet",
-           "-o", str(odir / f"{video_id}.%(ext)s"),
-           f"https://www.youtube.com/watch?v={video_id}"]
+    # 7) ytdlp_comments() içinde cmd satırını değiştir
+    cmd = _yt_dlp_base_cmd() + [
+    "--write-comments",
+    "-o", str(odir / f"{video_id}.%(ext)s"),
+    f"https://www.youtube.com/watch?v={video_id}",]
     try:
         subprocess.run(cmd, capture_output=True, timeout=240)
     except Exception as e:
@@ -742,11 +917,13 @@ def ytdlp_live_chat(video_id: str, title: str = "", video_date: str = "") -> Lis
         except: pass
 
     # yt-dlp komutu: json3 formatını dene (hem json hem json3 uzantısını kontrol et)
-    cmd = [sys.executable,"-m","yt_dlp",
-           "--write-subs","--skip-download","--no-warnings","--quiet",
-           "--sub-langs","live_chat",
-           "-o", str(odir / f"{video_id}.%(ext)s"),
-           f"https://www.youtube.com/watch?v={video_id}"]
+    # 8) ytdlp_live_chat() içinde cmd satırını değiştir
+    cmd = _yt_dlp_base_cmd() + [
+    "--write-subs",
+    "--write-auto-subs",
+    "--sub-langs", "live_chat",
+    "-o", str(odir / f"{video_id}.%(ext)s"),
+    f"https://www.youtube.com/watch?v={video_id}",]
     try:
         subprocess.run(cmd, capture_output=True, timeout=480)
     except Exception as e:
@@ -825,6 +1002,7 @@ def full_scrape(emit_fn=None) -> int:
     )
     if not videos:
         log.warning("Video bulunamadı"); return 0
+        
     total = 0
     for i, vid in enumerate(videos):
         vid_id = vid["video_id"]; title = vid["title"]; date = vid["video_date"]
@@ -3270,13 +3448,25 @@ $(document).on('keydown',e=>{ if(e.key==='Escape') closeModal(); });
 # § 22 — FLASK API ROTALARI
 # ═══════════════════════════════════════════════════════════════════════════════
 def create_app():
+    print(">>> create_app START")
+
     if not _FLASK or not _FLASK_SIO:
         raise RuntimeError("Flask veya Flask-SocketIO eksik")
+
     app = Flask(__name__)
     app.config["SECRET_KEY"] = CFG.get("flask_secret","secret")
-    if _FLASK_CORS: CORS(app)
-    socketio = SocketIO(app, cors_allowed_origins="*", async_mode="eventlet", namespace="/ws")
-    global _sio; _sio = socketio
+
+    if _FLASK_CORS:
+        CORS(app)
+
+    async_mode = "eventlet" if _FLASK and _try_import("eventlet") else "threading"
+    socketio = SocketIO(app, cors_allowed_origins="*", async_mode=async_mode)
+
+    global _sio
+    _sio = socketio
+
+    print(">>> create_app END")
+    return app, socketio
 
     @app.route("/")
     def index(): return render_template_string(_HTML)
@@ -3681,16 +3871,29 @@ def create_app():
         em=request.form.get("email",CFG["yt_email"])
         pw=request.form.get("password",CFG["yt_password"])
         if not em: return jsonify({"success":False,"message":"Email gerekli"})
-        def _bg():
-            global _driver
-            if _driver:
-                try: _driver.quit()
-                except: pass
-            _driver=make_driver(headless=False)
-            ok=yt_login(_driver,em,pw)
-            if _sio:
-                try: _sio.emit("login_result",{"success":ok,"email":em},namespace="/ws")
-                except: pass
+        # 4) api_yt_login() içindeki _bg bloğunu da aynı şekilde güvenli yap
+def _bg():
+    global _driver
+    if _driver:
+        try:
+            _driver.quit()
+        except:
+            pass
+    _driver = make_driver(headless=False)
+    if not _driver:
+        if _sio:
+            try:
+                _sio.emit("login_result", {"success": False, "email": em}, namespace="/ws")
+            except:
+                pass
+        return
+    ok = yt_login(_driver, em, pw)
+    if _sio:
+        try:
+            _sio.emit("login_result", {"success": ok, "email": em}, namespace="/ws")
+        except:
+            pass
+        
         threading.Thread(target=_bg,daemon=True).start()
         return jsonify({"success":True,"message":"Giriş Firefox'ta başlatıldı..."})
 
@@ -3768,7 +3971,7 @@ def create_app():
 
     @socketio.on("ping", namespace="/ws")
     def ws_ping(): emit("pong",{"ts":int(time.time())})
-
+    print(">>> create_app END")
     return app, socketio
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -3839,18 +4042,25 @@ def main():
         log.error("Flask yüklü değil: pip install flask flask-socketio flask-cors eventlet")
         sys.exit(1)
 
-    # Başlarken YouTube girişi (opsiyonel)
+    # Başlarken YouTube girişi (opsiyonel
+        # 3) main() içindeki _auto_login bloğunu bununla değiştir
     if args.login or (CFG.get("yt_email") and CFG.get("yt_password")):
         def _auto_login():
             global _driver
             _driver = make_driver(headless=args.headless)
-            if _driver and CFG.get("yt_email") and CFG.get("yt_password"):
-                yt_login(_driver, CFG["yt_email"], CFG["yt_password"])
-        threading.Thread(target=_auto_login, daemon=True).start()
+            if not _driver:
+                log.error("Otomatik login için driver oluşturulamadı.")
+                return
+        if CFG.get("yt_email") and CFG.get("yt_password"):
+            yt_login(_driver, CFG["yt_email"], CFG["yt_password"])
+            threading.Thread(target=_auto_login, daemon=True).start()
 
-    app, socketio = create_app()
-    log.info("🌐 Web panel: http://localhost:%d", args.port)
-    log.info("   Ctrl+C ile durdur")
+            result = create_app()
+        if not result or not isinstance(result, tuple) or len(result) != 2:
+                raise RuntimeError("create_app() (app, socketio) döndürmedi")
+                app, socketio = result
+                log.info("🌐 Web panel: http://localhost:%d", args.port)
+                log.info("   Ctrl+C ile durdur")
     try:
         socketio.run(app, host="0.0.0.0", port=args.port,
                      debug=False, allow_unsafe_werkzeug=True)
@@ -3864,3 +4074,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
