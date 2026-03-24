@@ -174,6 +174,7 @@ _DEFAULT_CFG = {
     "manual_login_timeout_sec": 180,
     "cookies_file":         "",
     "cookies_from_browser": "",
+    "cluster_min_messages": 1,
 }
 
 def load_config(cfg_file: str = "yt_guardian_config.json") -> dict:
@@ -701,6 +702,86 @@ def _run_ytdlp(cmd: List[str], timeout: int):
     return res
 
 
+def _parse_relative_time_to_ymd(text: str, now_utc: datetime = None) -> str:
+    """
+    'Streamed 5 hours ago' / '2 days ago' benzeri relatif zaman ifadelerini YYYYMMDD'e çevir.
+    Dil varyasyonlarına (İngilizce + temel Türkçe) toleranslıdır.
+    """
+    if not text:
+        return ""
+    now = now_utc or datetime.now(timezone.utc)
+    s = (text or "").strip().lower()
+    s = s.replace("streamed", "").replace("premiered", "").replace("published", "").strip()
+    s = s.replace("önce", "ago")
+    s = re.sub(r"\s+", " ", s)
+    m = re.search(r"\b(\d+|a|an)\s+([a-zçğıöşü]+)\b", s)
+    if not m:
+        return ""
+    num_raw = m.group(1)
+    unit = m.group(2)
+    n = 1 if num_raw in ("a", "an") else int(num_raw)
+
+    if unit.startswith(("second", "saniye")):
+        dt = now - timedelta(seconds=n)
+    elif unit.startswith(("minute", "dakika", "dk")):
+        dt = now - timedelta(minutes=n)
+    elif unit.startswith(("hour", "saat")):
+        dt = now - timedelta(hours=n)
+    elif unit.startswith(("day", "gün", "gun")):
+        dt = now - timedelta(days=n)
+    elif unit.startswith(("week", "hafta")):
+        dt = now - timedelta(weeks=n)
+    elif unit.startswith(("month", "ay")):
+        dt = now - timedelta(days=30 * n)
+    elif unit.startswith(("year", "yıl", "yil")):
+        dt = now - timedelta(days=365 * n)
+    else:
+        return ""
+    return dt.strftime("%Y%m%d")
+
+
+def _scrape_channel_relative_dates(channel_url: str) -> Dict[str, str]:
+    """
+    Kanal /videos ve /streams sekmelerinden video_id -> YYYYMMDD tarih eşlemesi çıkarır.
+    Kaynak: sayfadaki inline metadata metni (örn: 'Streamed 5 hours ago').
+    """
+    out: Dict[str, str] = {}
+    for src_url in _candidate_channel_urls(channel_url):
+        if not any(src_url.endswith(sfx) for sfx in ("/videos", "/streams")):
+            continue
+        try:
+            r = http_req.get(src_url, timeout=20, headers={
+                "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                              "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+            })
+            if r.status_code != 200:
+                continue
+            html = r.text
+            m = re.search(r"var ytInitialData = (\{.*?\});</script>", html, flags=re.S)
+            if not m:
+                continue
+            data = json.loads(m.group(1))
+            nodes = data.get("contents", {})
+            raw = json.dumps(nodes, ensure_ascii=False)
+            # video renderer parçalarını yakala
+            for vm in re.finditer(r'"videoId":"([^"]{11})".{0,1800}?"publishedTimeText":(\{.*?\})(?:,|})',
+                                  raw, flags=re.S):
+                vid = vm.group(1)
+                block = vm.group(2)
+                text_match = re.search(r'"simpleText":"([^"]+)"', block)
+                if not text_match:
+                    text_match = re.search(r'"text":"([^"]+)"', block)
+                if not text_match:
+                    continue
+                rel_txt = text_match.group(1).encode("utf-8").decode("unicode_escape")
+                ymd = _parse_relative_time_to_ymd(rel_txt)
+                if ymd and vid not in out:
+                    out[vid] = ymd
+        except Exception as e:
+            log.debug("Relatif tarih scrape atlandı (%s): %s", src_url, e)
+    return out
+
+
 def export_cookies_from_driver(driver, cookie_file: str = None) -> bool:
     if not driver:
         return False
@@ -754,6 +835,11 @@ def make_driver(headless: bool = False):
         opts.add_argument("--window-size=1920,1080")
         opts.add_argument("--mute-audio")
         opts.add_experimental_option("excludeSwitches", ["enable-logging"])
+        opts.page_load_strategy = "eager"
+        opts.add_experimental_option("prefs", {
+            "profile.default_content_setting_values.notifications": 2,
+            "profile.default_content_setting_values.images": 2,
+        })
 
         user_data_dir = (CFG.get("chromium_user_data_dir") or "").strip()
         profile_dir = (CFG.get("chromium_profile_directory") or "Default").strip()
@@ -870,6 +956,8 @@ def ytdlp_list_videos(channel_url: str, date_from: str, date_to: str) -> List[Di
     videos = []
     seen_ids = set()
 
+    relative_dates = _scrape_channel_relative_dates(channel_url)
+
     for src_url in _candidate_channel_urls(channel_url):
         cmd = _yt_dlp_base_cmd() + [
             "--flat-playlist",
@@ -912,6 +1000,9 @@ def ytdlp_list_videos(channel_url: str, date_from: str, date_to: str) -> List[Di
                     continue
                 if date_before and upload_date and upload_date > date_before:
                     continue
+
+                if not upload_date and vid_id in relative_dates:
+                    upload_date = relative_dates[vid_id]
 
                 if not upload_date and ts:
                     ds = datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y%m%d")
@@ -2039,7 +2130,8 @@ def build_sim_matrix(users: List[str]) -> Tuple[List[str],np.ndarray]:
         tss   = [int(r["timestamp"] or 0) for r in msgs_rows]
         text  = " ".join(msgs[:50])
         user_data[a] = {"msgs":msgs,"timestamps":tss,"text":text,
-                         "ngram":ngram_fp(text),"tfp":temporal_fp(tss)}
+                         "ngram":ngram_fp(text),"tfp":temporal_fp(tss),
+                         "typo":typo_fp(msgs)}
     # Embeddings
     texts = [user_data[a]["text"] or "empty" for a in users]
     embs  = embed_batch(texts)
@@ -2058,8 +2150,8 @@ def build_sim_matrix(users: List[str]) -> Tuple[List[str],np.ndarray]:
             # Temporal sim
             ts_s = time_sim(user_data[ai]["tfp"],user_data[aj]["tfp"])
             # Typo sim (karşılaştır)
-            tyi = typo_fp(user_data[ai]["msgs"])
-            tyj = typo_fp(user_data[aj]["msgs"])
+            tyi = user_data[ai]["typo"]
+            tyj = user_data[aj]["typo"]
             typ_s = 0.0
             for k in ["uppercase_ratio","punct_density","question_rate","exclamation_rate"]:
                 typ_s += 1-abs(tyi.get(k,0)-tyj.get(k,0))
@@ -2070,7 +2162,10 @@ def build_sim_matrix(users: List[str]) -> Tuple[List[str],np.ndarray]:
 
 def run_clustering(users: List[str] = None) -> dict:
     if users is None:
-        rows = db_exec("SELECT author FROM user_profiles",fetch="all") or []
+        min_msgs = max(1, int(CFG.get("cluster_min_messages", 1) or 1))
+        rows = db_exec(
+            "SELECT author FROM messages WHERE deleted=0 GROUP BY author HAVING COUNT(*)>=?",
+            (min_msgs,), fetch="all") or []
         users = [r["author"] for r in rows]
     if len(users) < 3:
         return {"error":"Yeterli kullanıcı yok","clusters":{},"graph_data":{"nodes":[],"links":[]}}
@@ -3687,12 +3782,18 @@ def create_app():
     def api_users():
         p=int(request.args.get("page",1)); sz=int(request.args.get("size",50))
         flt=request.args.get("filter",""); thr=request.args.get("threat","")
+        include_empty = request.args.get("include_empty","0") == "1"
         off=(p-1)*sz; wh="WHERE 1=1"; prms=[]
         if flt: wh+=" AND author LIKE ?"; prms.append(f"%{flt}%")
         if thr: wh+=" AND threat_level=?"; prms.append(thr)
+        if not include_empty:
+            wh += " AND EXISTS (SELECT 1 FROM messages m WHERE m.author=user_profiles.author AND m.deleted=0)"
         tot=(db_exec(f"SELECT COUNT(*) c FROM user_profiles {wh}",tuple(prms),fetch="one") or {}).get("c",0)
-        rows=db_exec(f"SELECT * FROM user_profiles {wh} ORDER BY threat_score DESC LIMIT ? OFFSET ?",
-                     tuple(prms)+(sz,off),fetch="all") or []
+        rows=db_exec(
+            f"SELECT user_profiles.*, "
+            f"COALESCE((SELECT COUNT(*) FROM messages m WHERE m.author=user_profiles.author AND m.deleted=0),0) AS msg_count "
+            f"FROM user_profiles {wh} ORDER BY threat_score DESC LIMIT ? OFFSET ?",
+            tuple(prms)+(sz,off),fetch="all") or []
         return jsonify({"users":[dict(r) for r in rows],"total":tot})
 
     @app.route("/api/user/<path:author>")
