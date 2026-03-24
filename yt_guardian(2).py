@@ -559,11 +559,15 @@ def _resolve_firefox_binary() -> str:
         p = shutil.which(name)
         if p:
             candidates.append(p)
+            real = os.path.realpath(p)
+            if real and real != p:
+                candidates.append(real)
 
     candidates.extend([
         "/usr/bin/firefox",
         "/usr/lib/firefox/firefox",
         "/snap/bin/firefox",
+        "/snap/firefox/current/usr/lib/firefox/firefox",
     ])
 
     seen = set()
@@ -571,9 +575,11 @@ def _resolve_firefox_binary() -> str:
         if not cand or cand in seen:
             continue
         seen.add(cand)
-        p = Path(cand)
-        if p.exists() and p.is_file() and os.access(str(p), os.X_OK) and _is_firefox_binary(str(p)):
-            return str(p)
+        resolved = os.path.realpath(cand)
+        for probe in [cand, resolved]:
+            p = Path(probe)
+            if p.exists() and p.is_file() and os.access(str(p), os.X_OK) and _is_firefox_binary(str(p)):
+                return str(p)
 
     return ""
 
@@ -3465,9 +3471,6 @@ def create_app():
     global _sio
     _sio = socketio
 
-    print(">>> create_app END")
-    return app, socketio
-
     @app.route("/")
     def index(): return render_template_string(_HTML)
 
@@ -3871,29 +3874,28 @@ def create_app():
         em=request.form.get("email",CFG["yt_email"])
         pw=request.form.get("password",CFG["yt_password"])
         if not em: return jsonify({"success":False,"message":"Email gerekli"})
-        # 4) api_yt_login() içindeki _bg bloğunu da aynı şekilde güvenli yap
-def _bg():
-    global _driver
-    if _driver:
-        try:
-            _driver.quit()
-        except:
-            pass
-    _driver = make_driver(headless=False)
-    if not _driver:
-        if _sio:
-            try:
-                _sio.emit("login_result", {"success": False, "email": em}, namespace="/ws")
-            except:
-                pass
-        return
-    ok = yt_login(_driver, em, pw)
-    if _sio:
-        try:
-            _sio.emit("login_result", {"success": ok, "email": em}, namespace="/ws")
-        except:
-            pass
-        
+        def _bg():
+            global _driver
+            if _driver:
+                try:
+                    _driver.quit()
+                except:
+                    pass
+            _driver = make_driver(headless=False)
+            if not _driver:
+                if _sio:
+                    try:
+                        _sio.emit("login_result", {"success": False, "email": em}, namespace="/ws")
+                    except:
+                        pass
+                return
+            ok = yt_login(_driver, em, pw)
+            if _sio:
+                try:
+                    _sio.emit("login_result", {"success": ok, "email": em}, namespace="/ws")
+                except:
+                    pass
+
         threading.Thread(target=_bg,daemon=True).start()
         return jsonify({"success":True,"message":"Giriş Firefox'ta başlatıldı..."})
 
@@ -4042,8 +4044,7 @@ def main():
         log.error("Flask yüklü değil: pip install flask flask-socketio flask-cors eventlet")
         sys.exit(1)
 
-    # Başlarken YouTube girişi (opsiyonel
-        # 3) main() içindeki _auto_login bloğunu bununla değiştir
+    # Başlarken YouTube girişi (opsiyonel)
     if args.login or (CFG.get("yt_email") and CFG.get("yt_password")):
         def _auto_login():
             global _driver
@@ -4051,16 +4052,15 @@ def main():
             if not _driver:
                 log.error("Otomatik login için driver oluşturulamadı.")
                 return
-        if CFG.get("yt_email") and CFG.get("yt_password"):
             yt_login(_driver, CFG["yt_email"], CFG["yt_password"])
-            threading.Thread(target=_auto_login, daemon=True).start()
+        threading.Thread(target=_auto_login, daemon=True).start()
 
-            result = create_app()
-        if not result or not isinstance(result, tuple) or len(result) != 2:
-                raise RuntimeError("create_app() (app, socketio) döndürmedi")
-                app, socketio = result
-                log.info("🌐 Web panel: http://localhost:%d", args.port)
-                log.info("   Ctrl+C ile durdur")
+    result = create_app()
+    if not result or not isinstance(result, tuple) or len(result) != 2:
+        raise RuntimeError("create_app() (app, socketio) döndürmedi")
+    app, socketio = result
+    log.info("🌐 Web panel: http://localhost:%d", args.port)
+    log.info("   Ctrl+C ile durdur")
     try:
         socketio.run(app, host="0.0.0.0", port=args.port,
                      debug=False, allow_unsafe_werkzeug=True)
@@ -4074,4 +4074,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
