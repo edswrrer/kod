@@ -33,6 +33,7 @@
 23. [Mesaj Formatı ve Arayüz Arama Modülü](#23-mesaj-formatı-ve-arayüz-arama-modülü)
 24. [Modül Bağımlılık Tablosu](#24-modül-bağımlılık-tablosu)
 25. [Python Mimarisi: Dosya ve Paket Yapısı](#25-python-mimarisi-dosya-ve-paket-yapısı)
+26. [Güvenlik Kapısı ve İnceleme Kuyruğu](#26-güvenlik-kapısı-ve-inceleme-kuyruğu)
 
 ---
 
@@ -218,6 +219,25 @@ Ham Metin
   "is_live": false
 }
 ```
+
+---
+
+## 26. Güvenlik Kapısı ve İnceleme Kuyruğu
+
+Üretim kullanımında yanlış pozitif riskini azaltmak ve hesap güvenliğini artırmak için:
+
+- **Destructive Action Gate**: yorum silme/canlı chat silme gibi işlemler varsayılan olarak kapalıdır (`allow_destructive_actions=false`).
+- **Credential Policy**: düz metin şifre yerine `YT_EMAIL` ve `YT_PASSWORD` ortam değişkenleri zorunlu tutulur (`require_env_credentials=true`).
+- **Delete Candidate Queue**: sistem, otomatik silme yerine risk skoruna göre moderatör inceleme kuyruğu üretir.
+
+### Önerilen Akış
+
+1. Veri çekimi + analiz (2023-2026 aralığı).
+2. `threat_score`, `hate_score`, `bot_prob`, `stalker_score` birleşik skor hesaplama.
+3. Panelde **inceleme adayı** listesi yayınlama.
+4. Moderatör onayı sonrası manuel aksiyon.
+
+Bu model, hatalı/aceleli otomatik moderasyon kararlarının etkisini azaltır.
 
 ### 3.4 Homograph Saldırısı Tespiti
 

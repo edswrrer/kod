@@ -19,8 +19,8 @@ KURULUM (Ubuntu):
 KONFİGÜRASYON:
   yt_guardian_config.json dosyası oluşturun (örnek aşağıda):
   {
-    "yt_email": "kullanici@hotmail.com",
-    "yt_password": "PAROLANIZ",
+    "yt_email": "",
+    "yt_password": "",
     "channel_url": "https://www.youtube.com/@ShmirchikArt/streams",
     "channel_handle": "@ShmirchikArt",
     "db_path": "yt_guardian.db",
@@ -36,8 +36,16 @@ KONFİGÜRASYON:
     "bot_threshold": 0.70,
     "hate_threshold": 0.65,
     "stalker_threshold": 0.55,
-    "device": "auto"
+    "device": "auto",
+    "allow_destructive_actions": false,
+    "require_env_credentials": true
   }
+
+GÜVENLİK NOTU:
+  YouTube kimlik bilgilerini config dosyasına düz metin olarak yazmayın.
+  Tercih edilen yöntem:
+    export YT_EMAIL="mail@domain.com"
+    export YT_PASSWORD="..."
 """
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -188,6 +196,8 @@ DEFAULT_CONFIG = {
     "device":             "auto",
     "fasttext_model":     "lid.176.bin",
     "retrain_threshold":  500,
+    "allow_destructive_actions": False,   # Silme/ban gibi işlemler için güvenlik kapısı
+    "require_env_credentials":  True,     # Kimlik bilgisi env'den gelmeli
 }
 
 def load_config(config_file: str = "yt_guardian_config.json") -> dict:
@@ -201,6 +211,12 @@ def load_config(config_file: str = "yt_guardian_config.json") -> dict:
         env_val = os.environ.get(key.upper(), "")
         if env_val:
             cfg[key] = env_val
+    # Güvenlik: require_env_credentials açıksa dosyadaki düz metin credentialları yok say
+    if cfg.get("require_env_credentials", True):
+        if not os.environ.get("YT_EMAIL"):
+            cfg["yt_email"] = ""
+        if not os.environ.get("YT_PASSWORD"):
+            cfg["yt_password"] = ""
     return cfg
 
 CONFIG = load_config()
@@ -231,6 +247,50 @@ THREAT_LABELS_ZEROSHOT = [
 BOT_ZEROSHOT_LABELS = ["human-like conversation", "spam or bot-like message"]
 
 ACTION_NAMES = {0: "HUMAN", 1: "BOT", 2: "HATER", 3: "STALKER", 4: "IMPERSONATOR", 5: "COORDINATED"}
+
+def destructive_actions_enabled() -> bool:
+    """Silme/ban gibi yıkıcı işlemler için global güvenlik anahtarı."""
+    return bool(CONFIG.get("allow_destructive_actions", False))
+
+def build_deletion_candidates(limit: int = 300) -> List[dict]:
+    """
+    Mevcut analizlerden hareketle moderatör inceleme kuyruğu oluşturur.
+    Not: Bu fonksiyon otomatik silme yapmaz, sadece öneri üretir.
+    """
+    sql = """
+    SELECT
+      m.id, m.video_id, m.author, m.message, m.timestamp,
+      COALESCE(u.threat_score,0) AS threat_score,
+      COALESCE(u.hate_score,0)   AS hate_score,
+      COALESCE(u.bot_prob,0)     AS bot_prob,
+      COALESCE(u.stalker_score,0) AS stalker_score,
+      COALESCE(u.threat_level,'GREEN') AS threat_level
+    FROM messages m
+    LEFT JOIN users u ON u.author = m.author
+    WHERE m.deleted = 0
+    ORDER BY (COALESCE(u.threat_score,0)*0.45 +
+              COALESCE(u.hate_score,0)*0.30 +
+              COALESCE(u.bot_prob,0)*0.15 +
+              COALESCE(u.stalker_score,0)*0.10) DESC, m.timestamp DESC
+    LIMIT ?
+    """
+    rows = db_exec(sql, (int(limit),), fetch="all") or []
+    out = []
+    for r in rows:
+        d = dict(r)
+        score = (float(d.get("threat_score", 0))*0.45 +
+                 float(d.get("hate_score", 0))*0.30 +
+                 float(d.get("bot_prob", 0))*0.15 +
+                 float(d.get("stalker_score", 0))*0.10)
+        decision = "REVIEW"
+        if score >= 0.80:
+            decision = "HIGH_RISK_REVIEW"
+        elif score >= 0.65:
+            decision = "MEDIUM_RISK_REVIEW"
+        d["delete_candidate_score"] = round(score, 4)
+        d["decision"] = decision
+        out.append(d)
+    return out
 
 # Oyun kuramı ödül matrisi  [moderatör_idx][aktör_idx] = (mod_payoff, aktör_payoff)
 PAYOFF_MATRIX = np.array([
@@ -3205,9 +3265,27 @@ def create_app():
         rows = db_exec("SELECT * FROM identity_links ORDER BY sim_score DESC LIMIT 200",fetch="all") or []
         return jsonify({"links":[dict(r) for r in rows]})
 
+    # ── Silme aday kuyruğu (otomatik silme yok) ──────────────────────────────
+    @app.route("/api/review/delete-candidates")
+    def api_review_delete_candidates():
+        limit = int(request.args.get("limit", "300") or 300)
+        limit = max(1, min(limit, 2000))
+        candidates = build_deletion_candidates(limit)
+        return jsonify({
+            "success": True,
+            "count": len(candidates),
+            "allow_destructive_actions": destructive_actions_enabled(),
+            "candidates": candidates
+        })
+
     # ── Yorum silme ───────────────────────────────────────────────────────────
     @app.route("/api/delete/comment", methods=["POST"])
     def api_delete_comment():
+        if not destructive_actions_enabled():
+            return jsonify({
+                "success": False,
+                "error": "Güvenlik nedeniyle silme kapalı. allow_destructive_actions=true yapın."
+            }), 403
         video_id  = request.form.get("video_id","")
         author    = request.form.get("author","")
         message   = request.form.get("message","")
@@ -3226,6 +3304,11 @@ def create_app():
 
     @app.route("/api/delete/live", methods=["POST"])
     def api_delete_live():
+        if not destructive_actions_enabled():
+            return jsonify({
+                "success": False,
+                "error": "Güvenlik nedeniyle canlı chat silme kapalı. allow_destructive_actions=true yapın."
+            }), 403
         video_id = request.form.get("video_id","")
         author   = request.form.get("author","")
         message  = request.form.get("message","")
@@ -3241,6 +3324,15 @@ def create_app():
         global _selenium_driver
         email = request.form.get("email", CONFIG.get("yt_email",""))
         password = request.form.get("password", CONFIG.get("yt_password",""))
+        if CONFIG.get("require_env_credentials", True):
+            env_email = os.environ.get("YT_EMAIL", "")
+            env_password = os.environ.get("YT_PASSWORD", "")
+            if not env_email or not env_password:
+                return jsonify({
+                    "success": False,
+                    "message": "YT_EMAIL ve YT_PASSWORD ortam değişkenleri gerekli (require_env_credentials=true)."
+                }), 400
+            email, password = env_email, env_password
         if not email or not password:
             return jsonify({"success":False,"message":"Email ve şifre gerekli"})
         def _login_bg():
@@ -3411,15 +3503,15 @@ def run_cli_scrape():
     log.info("✅ Analiz tamamlandı")
 
 def main():
+    global CONFIG
     parser = argparse.ArgumentParser(description="YT Guardian v2.0")
     parser.add_argument("--scrape", action="store_true", help="Sadece tarama yap (web panel başlatma)")
-    parser.add_argument("--port", type=int, default=CONFIG.get("flask_port",5000))
+    parser.add_argument("--port", type=int, default=5000)
     parser.add_argument("--config", type=str, default="yt_guardian_config.json")
     parser.add_argument("--analyze-all", action="store_true", help="Tüm kullanıcıları analiz et")
     args = parser.parse_args()
 
     # Konfigürasyon dosyası belirtilmişse yeniden yükle
-    global CONFIG
     CONFIG = load_config(args.config)
 
     bootstrap()
