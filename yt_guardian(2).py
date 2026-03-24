@@ -113,7 +113,7 @@ if _OLLAMA:
     import ollama as ollama_sdk
 if _SELENIUM:
     from selenium import webdriver
-    from selenium.webdriver.firefox.options import Options as FFOptions
+    from selenium.webdriver.chrome.options import Options as ChromeOptions
     from selenium.webdriver.common.by import By
     from selenium.webdriver.common.keys import Keys
     from selenium.webdriver.support.ui import WebDriverWait
@@ -166,9 +166,9 @@ _DEFAULT_CFG = {
     "fasttext_model":       "lid.176.bin",
     "retrain_threshold":    500,
     "new_account_months":   6,
-    "firefox_binary":       "",
+    "chromium_binary":      "",
     "cookies_file":         "",
-    "cookies_from_browser": "firefox",
+    "cookies_from_browser": "chromium",
 }
 
 def load_config(cfg_file: str = "yt_guardian_config.json") -> dict:
@@ -521,9 +521,9 @@ _driver    = None
 _drv_lock  = threading.Lock()
 _acct_cache: Dict[str,dict] = {}
 
-def _sanitize_firefox_env():
+def _sanitize_chromium_env():
     bad = []
-    for key in ("FIREFOX_BINARY", "MOZ_FIREFOX_BINARY"):
+    for key in ("CHROME_BINARY", "CHROMIUM_BINARY"):
         val = os.environ.get(key, "").strip()
         if not val:
             continue
@@ -536,26 +536,26 @@ def _sanitize_firefox_env():
 
 
 # 3) make_driver'dan önce bu yardımcıları ekle
-def _is_firefox_binary(path: str) -> bool:
+def _is_chromium_binary(path: str) -> bool:
     if not path:
         return False
     try:
         r = subprocess.run([path, "--version"], capture_output=True, text=True, timeout=8)
         out = f"{r.stdout} {r.stderr}".lower()
-        return r.returncode == 0 and "firefox" in out
+        return r.returncode == 0 and any(k in out for k in ("chromium", "chrome"))
     except Exception:
         return False
 
 
-def _resolve_firefox_binary() -> str:
+def _resolve_chromium_binary() -> str:
     candidates = []
 
-    for key in ("FIREFOX_BINARY", "MOZ_FIREFOX_BINARY", "FIREFOX_BIN"):
+    for key in ("CHROME_BINARY", "CHROMIUM_BINARY", "CHROMIUM_BIN"):
         v = os.environ.get(key, "").strip()
         if v:
             candidates.append(v)
 
-    for name in ("firefox", "firefox-esr", "firefox-bin"):
+    for name in ("chromium-browser", "chromium", "google-chrome", "google-chrome-stable"):
         p = shutil.which(name)
         if p:
             candidates.append(p)
@@ -564,10 +564,10 @@ def _resolve_firefox_binary() -> str:
                 candidates.append(real)
 
     candidates.extend([
-        "/usr/bin/firefox",
-        "/usr/lib/firefox/firefox",
-        "/snap/bin/firefox",
-        "/snap/firefox/current/usr/lib/firefox/firefox",
+        "/usr/bin/chromium-browser",
+        "/usr/bin/chromium",
+        "/usr/bin/google-chrome",
+        "/snap/bin/chromium",
     ])
 
     seen = set()
@@ -578,19 +578,23 @@ def _resolve_firefox_binary() -> str:
         resolved = os.path.realpath(cand)
         for probe in [cand, resolved]:
             p = Path(probe)
-            if p.exists() and p.is_file() and os.access(str(p), os.X_OK) and _is_firefox_binary(str(p)):
+            if p.exists() and p.is_file() and os.access(str(p), os.X_OK) and _is_chromium_binary(str(p)):
                 return str(p)
 
     return ""
 
 
 def _yt_dlp_base_cmd() -> List[str]:
+    ytdlp_bin = shutil.which("yt-dlp")
     cmd = [
-        sys.executable, "-m", "yt_dlp",
+        ytdlp_bin if ytdlp_bin else sys.executable,
+        "-m", "yt_dlp",
         "--no-warnings",
         "--ignore-errors",
         "--skip-download",
     ]
+    if ytdlp_bin:
+        cmd = cmd[:1] + cmd[3:]
 
     cookie_file = (CFG.get("cookies_file") or "").strip()
     if cookie_file and Path(cookie_file).exists():
@@ -647,35 +651,35 @@ def make_driver(headless: bool = False):
     if not _SELENIUM:
         return None
     try:
-        _sanitize_firefox_env()
-
-        opts = FFOptions()
+        _sanitize_chromium_env()
+        opts = ChromeOptions()
         if headless:
-            opts.add_argument("--headless")
+            opts.add_argument("--headless=new")
+        opts.add_argument("--no-sandbox")
+        opts.add_argument("--disable-dev-shm-usage")
+        opts.add_argument("--window-size=1920,1080")
+        opts.add_argument("--mute-audio")
+        opts.add_experimental_option("excludeSwitches", ["enable-logging"])
 
-        opts.set_preference("dom.webnotifications.enabled", False)
-        opts.set_preference("media.volume_scale", "0.0")
-        opts.set_preference("browser.download.folderList", 2)
-
-        ff_bin = (CFG.get("firefox_binary") or os.environ.get("FIREFOX_BIN") or "").strip()
-        if ff_bin and _is_firefox_binary(ff_bin):
-            opts.binary_location = ff_bin
-            log.info("✅ Firefox binary config/env üzerinden alındı: %s", ff_bin)
+        chrome_bin = (CFG.get("chromium_binary") or os.environ.get("CHROMIUM_BIN") or "").strip()
+        if chrome_bin and _is_chromium_binary(chrome_bin):
+            opts.binary_location = chrome_bin
+            log.info("✅ Chromium binary config/env üzerinden alındı: %s", chrome_bin)
         else:
-            resolved = _resolve_firefox_binary()
+            resolved = _resolve_chromium_binary()
             if resolved:
                 opts.binary_location = resolved
-                log.info("✅ Firefox binary otomatik bulundu: %s", resolved)
+                log.info("✅ Chromium binary otomatik bulundu: %s", resolved)
             else:
-                log.warning("Firefox binary bulunamadı; Selenium Manager fallback deneniyor.")
+                log.warning("Chromium binary bulunamadı; Selenium Manager fallback deneniyor.")
 
-        drv = webdriver.Firefox(options=opts)
+        drv = webdriver.Chrome(options=opts)
         drv.set_page_load_timeout(60)
-        log.info("✅ Firefox WebDriver başlatıldı")
+        log.info("✅ Chromium WebDriver başlatıldı")
         return drv
 
     except Exception as e:
-        log.error("Firefox başlatılamadı: %s", e)
+        log.error("Chromium başlatılamadı: %s", e)
         return None
 
 def yt_login(driver, email: str, password: str) -> bool:
@@ -851,21 +855,59 @@ def _parse_live_chat_json3(cd: dict, video_id: str, title: str,
                             video_date: str, base_ts: int) -> List[Dict]:
     """JSON3 formatı (.live_chat.json3): events[].segs + tOffsetMs"""
     msgs = []
-    for ev in cd.get("events",[]):
-        segs = ev.get("segs",[])
-        text = "".join(s.get("utf8","") for s in segs).strip()
-        if not text: continue
-        author = ev.get("authorName","")
-        if not author: continue
-        # tOffsetMs → video başından ms offset; base_ts ile mutlak zamana çevir
+    for ev in cd.get("events", []):
+        segs = ev.get("segs", [])
+        text = "".join(s.get("utf8", "") for s in segs).strip()
+        if not text:
+            continue
+        author = ev.get("authorName", "")
+        if not author:
+            continue
         t_off_ms = int(ev.get("tOffsetMs", 0) or 0)
-        abs_ts   = base_ts + t_off_ms // 1000 if base_ts else t_off_ms // 1000
+        abs_ts = base_ts + t_off_ms // 1000 if base_ts else t_off_ms // 1000
         m = process_raw({"video_id":video_id,"title":title,"video_date":video_date,
-                          "author":author,
-                          "author_channel_id":ev.get("authorExternalChannelId",""),
-                          "message":text,"timestamp_utc":abs_ts,
-                          "source_type":"replay_chat","is_live":False})
-        if m: msgs.append(m)
+                         "author":author,"author_channel_id":ev.get("authorExternalChannelId",""),
+                         "message":text,"timestamp_utc":abs_ts,
+                         "source_type":"replay_chat","is_live":False})
+        if m:
+            msgs.append(m)
+
+    # Bazı yt-dlp sürümleri json3 dosyasında actions/replayChatItemAction gömer.
+    if msgs:
+        return msgs
+
+    actions = cd.get("actions", [])
+    if not actions and isinstance(cd.get("continuationContents"), dict):
+        live_cont = cd["continuationContents"].get("liveChatContinuation", {})
+        actions = live_cont.get("actions", [])
+    for act in actions:
+        replay = act.get("replayChatItemAction", act)
+        offset_ms = int(replay.get("videoOffsetTimeMsec", 0) or 0)
+        abs_ts = base_ts + offset_ms // 1000 if base_ts else offset_ms // 1000
+        for item in replay.get("actions", [replay]):
+            renderer = (item.get("addChatItemAction", {})
+                           .get("item", {})
+                           .get("liveChatTextMessageRenderer", {}))
+            if not renderer:
+                renderer = (item.get("addChatItemAction", {})
+                               .get("item", {})
+                               .get("liveChatPaidMessageRenderer", {}))
+            if not renderer:
+                continue
+            runs = renderer.get("message", {}).get("runs", [])
+            text = "".join(r.get("text", "") for r in runs).strip()
+            author = renderer.get("authorName", {}).get("simpleText", "")
+            if not text or not author:
+                continue
+            ts_usec = int(renderer.get("timestampUsec", "0") or "0")
+            if ts_usec > 0:
+                abs_ts = ts_usec // 1_000_000
+            m = process_raw({"video_id":video_id,"title":title,"video_date":video_date,
+                             "author":author,"author_channel_id":renderer.get("authorExternalChannelId",""),
+                             "message":text,"timestamp_utc":abs_ts,
+                             "source_type":"replay_chat","is_live":False})
+            if m:
+                msgs.append(m)
     return msgs
 
 def _parse_live_chat_jsonl(path: Path, video_id: str, title: str,
@@ -925,13 +967,17 @@ def ytdlp_live_chat(video_id: str, title: str = "", video_date: str = "") -> Lis
     # yt-dlp komutu: json3 formatını dene (hem json hem json3 uzantısını kontrol et)
     # 8) ytdlp_live_chat() içinde cmd satırını değiştir
     cmd = _yt_dlp_base_cmd() + [
+    "--write-info-json",
     "--write-subs",
     "--write-auto-subs",
+    "--sub-format", "json3",
     "--sub-langs", "live_chat",
     "-o", str(odir / f"{video_id}.%(ext)s"),
     f"https://www.youtube.com/watch?v={video_id}",]
     try:
-        subprocess.run(cmd, capture_output=True, timeout=480)
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=480)
+        if res.stderr and res.returncode != 0:
+            log.warning("yt-dlp live chat stderr %s: %s", video_id, res.stderr.strip()[:1500])
     except Exception as e:
         log.warning("Live chat indir hatası %s: %s", video_id, e)
 
