@@ -120,7 +120,9 @@ if _SELENIUM:
     from selenium.webdriver.support import expected_conditions as EC
     from selenium.webdriver.common.action_chains import ActionChains
     from selenium.common.exceptions import (NoSuchElementException, TimeoutException,
-                                             StaleElementReferenceException)
+                                             StaleElementReferenceException,
+                                             InvalidSessionIdException,
+                                             WebDriverException)
 if _FLASK:
     from flask import Flask, render_template_string, request, jsonify
 if _FLASK_SIO:
@@ -308,7 +310,44 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_link_ab    ON identity_links(user_a,user_b);
         CREATE INDEX IF NOT EXISTS idx_ds_conf    ON dataset(confirmed,created_at);
         """)
+        _migrate_legacy_schema(c)
     log.info("✅ SQLite hazır: %s", CFG["db_path"])
+
+def _table_columns(conn: sqlite3.Connection, table: str) -> set:
+    try:
+        rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+        return {str(r["name"]) for r in rows}
+    except Exception:
+        return set()
+
+def _migrate_legacy_schema(conn: sqlite3.Connection):
+    """
+    Eski sürümlerdeki kolon adlarını yeni şema ile uyumlu hale getir.
+    Özellikle `user_profiles.username` -> `user_profiles.author` geçişini düzeltir.
+    """
+    cols = _table_columns(conn, "user_profiles")
+    if not cols:
+        return
+
+    if "author" not in cols and "username" in cols:
+        try:
+            conn.execute("ALTER TABLE user_profiles RENAME COLUMN username TO author")
+            log.info("✅ DB migration: user_profiles.username -> author")
+        except Exception as e:
+            log.warning("Kolon rename başarısız, fallback uygulanıyor: %s", e)
+            try:
+                conn.execute("ALTER TABLE user_profiles ADD COLUMN author TEXT")
+                conn.execute("UPDATE user_profiles SET author=username WHERE author IS NULL OR author=''")
+            except Exception as e2:
+                log.error("DB migration başarısız: author kolonu oluşturulamadı: %s", e2)
+
+    cols = _table_columns(conn, "user_profiles")
+    if "pagerank_score" not in cols:
+        try:
+            conn.execute("ALTER TABLE user_profiles ADD COLUMN pagerank_score REAL DEFAULT 0.0")
+            log.info("✅ DB migration: user_profiles.pagerank_score eklendi")
+        except Exception as e:
+            log.warning("pagerank_score kolonu eklenemedi: %s", e)
 
 def db_exec(sql: str, params: tuple = (), fetch: str = None):
     with _db_lock:
@@ -729,12 +768,25 @@ def make_driver(headless: bool = False):
         log.error("Chromium başlatılamadı: %s", e)
         return None
 
+def is_driver_alive(driver) -> bool:
+    if not driver:
+        return False
+    try:
+        _ = driver.current_url
+        return True
+    except Exception:
+        return False
+
 def yt_login(driver, email: str, password: str) -> bool:
     if not driver: return False
     try:
+        if not is_driver_alive(driver):
+            log.error("YouTube girişi atlandı: Chromium oturumu kapalı veya geçersiz.")
+            return False
         driver.get("https://www.youtube.com")
         time.sleep(2)
-        if "youtube.com" in (driver.current_url or "") and "accounts.google.com" not in (driver.current_url or ""):
+        cur_url = (driver.current_url or "")
+        if "youtube.com" in cur_url and "accounts.google.com" not in cur_url:
             log.info("✅ YouTube oturumu mevcut görünüyor, yeniden giriş atlandı")
             return True
 
@@ -767,6 +819,9 @@ def yt_login(driver, email: str, password: str) -> bool:
         ok = "youtube.com" in driver.current_url
         log.info("✅ YouTube girişi: %s — %s", email, "OK" if ok else "BAŞARISIZ")
         return ok
+    except (InvalidSessionIdException, WebDriverException) as e:
+        log.error("YouTube girişi hatası (Chromium oturumu düşmüş): %s", e)
+        return False
     except Exception as e:
         log.error("YouTube girişi hatası: %s", e); return False
 
@@ -1092,6 +1147,9 @@ def ytdlp_live_chat(video_id: str, title: str = "", video_date: str = "") -> Lis
 def selenium_live_chat(driver, video_id: str, title: str = "") -> List[Dict]:
     """Selenium ile canlı yayın chat mesajlarını çek"""
     if not driver: return []
+    if not is_driver_alive(driver):
+        log.warning("Selenium live chat atlandı: Chromium oturumu kapalı/geçersiz.")
+        return []
     msgs = []
     try:
         driver.get(f"https://www.youtube.com/watch?v={video_id}")
@@ -1109,6 +1167,8 @@ def selenium_live_chat(driver, video_id: str, title: str = "") -> List[Dict]:
                                       "source_type":"live","is_live":True})
                     if m: msgs.append(m)
             except: pass
+    except (InvalidSessionIdException, WebDriverException) as e:
+        log.warning("Selenium live chat oturum hatası: %s", e)
     except Exception as e:
         log.warning("Selenium live chat: %s", e)
     return msgs
@@ -3819,7 +3879,10 @@ def create_app():
 
     @app.route("/api/pagerank")
     def api_pagerank():
-        rows=db_exec("SELECT author,pagerank_score FROM user_profiles WHERE pagerank_score>0"
+        with _get_conn() as c:
+            cols = _table_columns(c, "user_profiles")
+        author_col = "author" if "author" in cols else ("username" if "username" in cols else "author")
+        rows=db_exec(f"SELECT {author_col} AS author,pagerank_score FROM user_profiles WHERE pagerank_score>0"
                      " ORDER BY pagerank_score DESC LIMIT 50",fetch="all") or []
         return jsonify({"scores":{r["author"]:r["pagerank_score"] for r in rows}})
 
@@ -4010,7 +4073,7 @@ def create_app():
                     pass
 
         threading.Thread(target=_bg,daemon=True).start()
-        return jsonify({"success":True,"message":"Giriş Firefox'ta başlatıldı..."})
+        return jsonify({"success":True,"message":"Giriş Chromium'da başlatıldı..."})
 
     # ── Live Monitor ──────────────────────────────────────────────────────────
     @app.route("/api/live/start", methods=["POST"])
