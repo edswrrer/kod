@@ -4250,9 +4250,16 @@ def create_app():
                         pass
                 return
             ok = yt_login(_driver, em, pw)
+            nav_info = {"success": False, "message": "Login başarısız, streams kontrolü atlandı."}
+            if ok:
+                nav_info = yt_navigate_and_check_live(_driver)
             if _sio:
                 try:
-                    _sio.emit("login_result", {"success": ok, "email": em}, namespace="/ws")
+                    _sio.emit("login_result", {
+                        "success": ok,
+                        "email": em,
+                        "navigation": nav_info,
+                    }, namespace="/ws")
                 except:
                     pass
 
@@ -4412,7 +4419,9 @@ def main():
             if not _driver:
                 log.error("Otomatik login için driver oluşturulamadı.")
                 return
-            yt_login(_driver, CFG["yt_email"], CFG["yt_password"])
+            ok = yt_login(_driver, CFG["yt_email"], CFG["yt_password"])
+            if ok:
+                yt_navigate_and_check_live(_driver)
         threading.Thread(target=_auto_login, daemon=True).start()
 
     result = create_app()
