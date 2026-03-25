@@ -830,11 +830,13 @@ def make_driver(headless: bool = False):
         opts = ChromeOptions()
         if headless:
             opts.add_argument("--headless=new")
+        opts.add_argument("--disable-blink-features=AutomationControlled")
         opts.add_argument("--no-sandbox")
         opts.add_argument("--disable-dev-shm-usage")
         opts.add_argument("--window-size=1920,1080")
         opts.add_argument("--mute-audio")
-        opts.add_experimental_option("excludeSwitches", ["enable-logging"])
+        opts.add_experimental_option("excludeSwitches", ["enable-automation", "enable-logging"])
+        opts.add_experimental_option("useAutomationExtension", False)
         opts.page_load_strategy = "eager"
         opts.add_experimental_option("prefs", {
             "profile.default_content_setting_values.notifications": 2,
@@ -879,52 +881,69 @@ def is_driver_alive(driver) -> bool:
         return False
 
 def yt_login(driver, email: str, password: str) -> bool:
-    if not driver: return False
+    if not driver:
+        return False
     try:
         if not is_driver_alive(driver):
             log.error("YouTube girişi atlandı: Chromium oturumu kapalı veya geçersiz.")
             return False
-        driver.get("https://www.youtube.com")
-        time.sleep(2)
-        cur_url = (driver.current_url or "")
-        if "youtube.com" in cur_url and "accounts.google.com" not in cur_url:
-            log.info("✅ YouTube oturumu mevcut görünüyor, yeniden giriş atlandı")
-            return True
 
         driver.get("https://accounts.google.com/signin")
-        wait = WebDriverWait(driver, 25)
+        wait = WebDriverWait(driver, 15)
+        timeout_sec = int(CFG.get("manual_login_timeout_sec", 180) or 180)
 
-        if not email or not password:
-            timeout_sec = int(CFG.get("manual_login_timeout_sec", 180) or 180)
-            deadline = time.time() + timeout_sec
-            log.warning("ℹ️ Otomatik giriş kapalı: lütfen tarayıcıda MANUEL giriş yapın (zaman aşımı: %ss)", timeout_sec)
-            while time.time() < deadline:
-                cur = (driver.current_url or "").lower()
-                if "youtube.com" in cur and "accounts.google.com" not in cur:
-                    log.info("✅ Manuel giriş başarıyla algılandı")
-                    return True
-                time.sleep(2)
-            log.error("⛔ Manuel giriş zaman aşımına uğradı")
-            return False
+        email_strategies = [
+            (By.ID, "identifierId"),
+            (By.CSS_SELECTOR, 'input[jsname="YPqjbf"]'),
+            (By.CSS_SELECTOR, 'input[name="identifier"]'),
+            (By.CSS_SELECTOR, 'input[type="email"]'),
+        ]
 
-        # E-posta
-        ef = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR,"input[type='email']")))
-        ef.clear(); ef.send_keys(email); ef.send_keys(Keys.RETURN)
-        time.sleep(2.5)
-        # Şifre
-        pf = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR,"input[type='password']")))
-        pf.clear(); pf.send_keys(password); pf.send_keys(Keys.RETURN)
-        time.sleep(5)
-        driver.get("https://www.youtube.com")
-        time.sleep(2)
-        ok = "youtube.com" in driver.current_url
-        log.info("✅ YouTube girişi: %s — %s", email, "OK" if ok else "BAŞARISIZ")
-        return ok
+        email_element = None
+        for strategy in email_strategies:
+            try:
+                email_element = wait.until(EC.presence_of_element_located(strategy))
+                if email_element:
+                    break
+            except Exception:
+                continue
+
+        if email_element and email:
+            email_element.clear()
+            email_element.send_keys(email)
+            email_element.send_keys(Keys.ENTER)
+            time.sleep(3)
+        else:
+            log.warning("E-posta alanı bulunamadı veya e-posta boş, manuel devam edilecek.")
+
+        if password:
+            try:
+                password_field = wait.until(EC.element_to_be_clickable((By.NAME, "Passwd")))
+                password_field.clear()
+                password_field.send_keys(password)
+                password_field.send_keys(Keys.ENTER)
+            except Exception:
+                log.warning("Otomatik şifre girişi başarısız veya engellendi; manuel giriş bekleniyor.")
+        else:
+            log.warning("Şifre boş; manuel giriş bekleniyor.")
+
+        log.info("Giriş tamamlanana kadar bekleniyor (manuel işlem yapılabilir)...")
+        deadline = time.time() + timeout_sec
+        while time.time() < deadline:
+            current_url = (driver.current_url or "").lower()
+            if "youtube.com" in current_url and "accounts.google.com" not in current_url:
+                log.info("✅ YouTube girişi başarılı!")
+                return True
+            time.sleep(2)
+
+        log.error("❌ Zaman aşımı: YouTube girişi tamamlanamadı (%ss).", timeout_sec)
+        return False
     except (InvalidSessionIdException, WebDriverException) as e:
         log.error("YouTube girişi hatası (Chromium oturumu düşmüş): %s", e)
         return False
     except Exception as e:
-        log.error("YouTube girişi hatası: %s", e); return False
+        log.error("YouTube girişi hatası: %s", e)
+        return False
 
 
 
