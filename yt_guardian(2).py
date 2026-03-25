@@ -43,8 +43,8 @@ log = logging.getLogger("YTGv5")
 
 # ─── Varsayılan Yapılandırma (gir.py ile uyumlu) ──────────────────────────────
 _DEFAULT_CFG = {
-    "yt_email":    "physicus93@hotmail.com",
-    "yt_password": "%C7JdE4,)$MS;4'",
+    "yt_email":    "",
+    "yt_password": "",
     "target_channel": "https://www.youtube.com/@ShmirchikArt",
     "target_streams": "https://www.youtube.com/@ShmirchikArt/streams",
     "manual_login_timeout_sec": 180,
@@ -52,6 +52,8 @@ _DEFAULT_CFG = {
     "data_dir": "./yt_data",
     "cookies_file": "yt_cookies.json",
     "user_data_dir": "./playwright_profile",   # kalıcı profil (oturum hatırlama)
+    "manual_login_on_security_rejection": True,
+    "force_manual_login": False,
 }
 
 def load_config(cfg_file: str = "yt_guardian_config.json") -> dict:
@@ -231,10 +233,12 @@ async def yt_login(context: BrowserContext, email: str, password: str) -> bool:
         except Exception:
             pass  # Avatar yoksa giriş akışına devam
 
+        force_manual_login = bool(CFG.get("force_manual_login", False))
+
         # ── Otomatik giriş ─────────────────────────────────────────────────
-        if not email or not password:
+        if force_manual_login or not email or not password:
             log.warning("E-posta/şifre sağlanmadı — manuel giriş bekleniyor...")
-            await page.goto("https://accounts.google.com/signin")
+            await page.goto("https://accounts.google.com/signin/v2/identifier?service=youtube")
             return await _wait_for_login(page)
 
         # gir.py: driver.get("https://accounts.google.com/signin")
@@ -248,6 +252,17 @@ async def yt_login(context: BrowserContext, email: str, password: str) -> bool:
         log.info("🚀 Google giriş sayfası açılıyor...")
         await page.goto(login_url, wait_until="domcontentloaded")
         await asyncio.sleep(2)
+
+        # Google "Bu tarayıcı veya uygulama güvenli olmayabilir" ekranı
+        if "signin/rejected" in page.url:
+            await page.screenshot(path="login_rejected.png")
+            log.warning("⚠️ Güvenlik reddi algılandı (signin/rejected): %s", page.url)
+            if CFG.get("manual_login_on_security_rejection", True):
+                log.info("↪️ Manuel giriş fallback başlatılıyor (kalıcı profil ile).")
+                await page.goto("https://accounts.google.com/signin/v2/identifier?service=youtube")
+                return await _wait_for_login(page)
+            await page.close()
+            return False
 
         # ── ADIM 1: E-posta ────────────────────────────────────────────────
         log.info("[1/4] E-posta giriliyor...")
