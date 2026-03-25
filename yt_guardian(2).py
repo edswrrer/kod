@@ -739,11 +739,11 @@ def export_cookies_from_driver(driver, cookie_file: str = None) -> bool:
         
         
 
-## 4) make_driver() — Anti-bot stealth + hızlı bağlantı
+## 4) make_driver() — stabil bağlantı ayarları
 def make_driver(headless: bool = False):
     """
     Chromium WebDriver başlat.
-    Temel stealth ayarları ile automation izlerini azaltır.
+    Stabilite odaklı temel ayarlarla başlatır.
     """
     if not _SELENIUM:
         return None
@@ -754,14 +754,10 @@ def make_driver(headless: bool = False):
         if headless:
             options.add_argument("--headless=new")
 
-        options.add_argument("--disable-blink-features=AutomationControlled")
-        options.add_experimental_option("excludeSwitches", ["enable-automation"])
-        options.add_experimental_option("useAutomationExtension", False)
-        options.add_argument(
-            "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/120.0.0.0 Safari/537.36"
-        )
+        options.add_argument("--start-maximized")
+        options.add_argument("--disable-popup-blocking")
+        options.add_argument("--disable-dev-shm-usage")
+        options.add_argument("--no-sandbox")
 
         chrome_bin = (CFG.get("chromium_binary") or os.environ.get("CHROMIUM_BIN") or "").strip()
         if chrome_bin and _is_chromium_binary(chrome_bin):
@@ -771,12 +767,7 @@ def make_driver(headless: bool = False):
             if resolved:
                 options.binary_location = resolved
 
-        driver = webdriver.Chrome(options=options)
-        driver.execute_cdp_cmd(
-            "Page.addScriptToEvaluateOnNewDocument",
-            {"source": "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"},
-        )
-        return driver
+        return webdriver.Chrome(options=options)
     except Exception as e:
         log.error("Chromium başlatılamadı: %s", e)
         return None
@@ -888,7 +879,7 @@ def _save_screenshot(driver, name: str):
 
 
 def yt_login(driver, email: str, password: str) -> bool:
-    """Google hesabına temel giriş akışı."""
+    """Google hesabına temel giriş akışı (2FA/manuel onay destekli)."""
     if not driver:
         return False
 
@@ -905,8 +896,22 @@ def yt_login(driver, email: str, password: str) -> bool:
         password_input.send_keys(password)
         password_input.send_keys(Keys.ENTER)
 
-        print("Giriş onayı bekleniyor...")
-        time.sleep(5)
+        log.info("🔑 Giriş bilgileri gönderildi, onay/2FA için kısa bekleme...")
+
+        # Bazı hesaplarda şifre sonrası ek onay adımı açılabilir.
+        # URL'nin Google hesap alanından YouTube alanına geçmesi için kısa bir pencere tanıyoruz.
+        approved = False
+        for _ in range(20):
+            current_url = (driver.current_url or "").lower()
+            if "youtube.com" in current_url or "myaccount.google.com" in current_url:
+                approved = True
+                break
+            time.sleep(1)
+
+        if not approved:
+            log.warning("Giriş sonrası onay ekranı devam ediyor olabilir; manuel onay gerekebilir.")
+
+        go_to_shmirchik_content(driver, "streams")
 
         export_cookies_from_driver(driver)
         return True
@@ -915,16 +920,24 @@ def yt_login(driver, email: str, password: str) -> bool:
         return False
 
 
-def go_to_shmirchik(driver, mode: str = "streams"):
-    """Shmirchik kanalında hedef sekmeye direkt URL ile git."""
-    if mode == "streams":
-        target_url = "https://www.youtube.com/@ShmirchikArt/streams"
-    else:
-        target_url = "https://www.youtube.com/@ShmirchikArt/videos"
+def go_to_shmirchik_content(driver, section: str = "streams"):
+    """
+    Doğrudan hedef sekmeye gider.
+    section: 'streams' veya 'videos'
+    """
+    section = "videos" if section == "videos" else "streams"
+    base_url = f"https://www.youtube.com/@ShmirchikArt/{section}"
+    print(f"🚀 {section.capitalize()} sekmesine gidiliyor...")
+    driver.get(base_url)
+    WebDriverWait(driver, 15).until(
+        EC.presence_of_element_located((By.TAG_NAME, "ytd-rich-grid-renderer"))
+    )
+    print(f"✅ {section} başarıyla yüklendi.")
 
-    print(f"Hedef sayfaya gidiliyor: {target_url}")
-    driver.get(target_url)
-    time.sleep(5)
+
+def go_to_shmirchik(driver, mode: str = "streams"):
+    """Geriye dönük uyumluluk için yönlendirme sarmalayıcı."""
+    go_to_shmirchik_content(driver, "videos" if mode == "videos" else "streams")
 
 
 # ── TARİH ÇÖZÜCÜ ─────────────────────────────────────────────────────────────
