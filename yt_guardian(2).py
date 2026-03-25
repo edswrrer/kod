@@ -173,7 +173,7 @@ _DEFAULT_CFG = {
     "chromium_profile_directory": "Default",
     "manual_login_timeout_sec": 180,
     "cookies_file":         "",
-    "cookies_from_browser": "",
+    "cookies_from_browser": "chrome",
 }
 
 def load_config(cfg_file: str = "yt_guardian_config.json") -> dict:
@@ -649,6 +649,8 @@ def _yt_dlp_base_cmd() -> List[str]:
         "--no-warnings",
         "--ignore-errors",
         "--skip-download",
+        "--retries", "3",
+        "--fragment-retries", "3",
     ]
     if ytdlp_bin:
         cmd = cmd[:1] + cmd[3:]
@@ -685,7 +687,10 @@ def _run_ytdlp(cmd: List[str], timeout: int):
     yt-dlp çalıştır.
     Eğer tarayıcı cookie DB hatası alırsa aynı komutu cookies-from-browser olmadan tekrar dener.
     """
-    res = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    ytdlp_env = os.environ.copy()
+    # curl_cffi + eventlet/greendns çakışmalarında (GreenSocket.sendmsg) ağ katmanını daha stabil hale getir.
+    ytdlp_env.setdefault("EVENTLET_NO_GREENDNS", "yes")
+    res = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=ytdlp_env)
 
     stderr = (res.stderr or "").lower()
     cookie_db_err = (
@@ -697,7 +702,7 @@ def _run_ytdlp(cmd: List[str], timeout: int):
     if res.returncode != 0 and has_cfb and cookie_db_err:
         log.warning("yt-dlp browser cookie hatası; cookies-from-browser olmadan tekrar deneniyor.")
         retry_cmd = _strip_cookies_from_browser_args(cmd)
-        res = subprocess.run(retry_cmd, capture_output=True, text=True, timeout=timeout)
+        res = subprocess.run(retry_cmd, capture_output=True, text=True, timeout=timeout, env=ytdlp_env)
     return res
 
 
@@ -987,7 +992,7 @@ def _candidate_channel_urls(channel_url: str) -> List[str]:
 
     # /videos önce (daha fazla genel yorum), sonra /streams (canlı yayın replay)
     candidates = []
-    for sfx in ("/videos", "/streams", "/live", ""):
+    for sfx in ("/videos", "/streams", ""):
         cand = base + sfx
         if cand not in candidates:
             candidates.append(cand)
@@ -1009,7 +1014,12 @@ def _ytdlp_fetch_playlist(src_url: str, timeout: int = 360) -> List[Dict]:
         payload = (res.stdout or "").strip()
         if not payload:
             return []
-        return json.loads(payload).get("entries") or []
+        data = json.loads(payload)
+        if isinstance(data, dict):
+            return data.get("entries") or []
+        if isinstance(data, list):
+            return data
+        return []
     except json.JSONDecodeError as e:
         log.warning("yt-dlp JSON parse hatası (%s): %s", src_url, e)
     except Exception as e:
@@ -1103,11 +1113,12 @@ def ytdlp_comments(video_id: str, title: str = "", video_date: str = "",
     # yt-dlp: yorumlar + tam metadata
     cmd = _yt_dlp_base_cmd() + [
         "--write-comments",
+        "--get-comments",
         "--write-info-json",
         "--skip-download",
         "--no-warnings",
         "--ignore-errors",
-        "--extractor-args", "youtube:skip=authcheck",
+        "--extractor-args", "youtube:comment_sort=top;max_comments=all",
         "-o", str(odir / f"{video_id}.%(ext)s"),
         f"https://www.youtube.com/watch?v={video_id}",
     ]
@@ -1305,6 +1316,7 @@ def ytdlp_live_chat(video_id: str, title: str = "", video_date: str = "") -> Lis
     "--write-auto-subs",
     "--sub-format", "json3",
     "--sub-langs", "live_chat",
+    "--extractor-args", "youtube:player_client=web,web_safari",
     "-o", str(odir / f"{video_id}.%(ext)s"),
     f"https://www.youtube.com/watch?v={video_id}",]
     try:
