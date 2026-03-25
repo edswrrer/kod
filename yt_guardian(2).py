@@ -423,6 +423,23 @@ async def navigate_to_streams(context: BrowserContext) -> Page:
     return page
 
 
+async def warmup_homepage(context: BrowserContext):
+    """
+    YouTube ana sayfaya gidip kısa bir bekleme uygula.
+    Amaç: oturum/cookie yönlendirmelerinin tamamlanmasını beklemek.
+    """
+    page = await context.new_page()
+    min_sec = int(CFG.get("warmup_home_min_sec", 5))
+    max_sec = int(CFG.get("warmup_home_max_sec", 10))
+    if min_sec > max_sec:
+        min_sec, max_sec = max_sec, min_sec
+    delay = random.uniform(min_sec, max_sec)
+    log.info("🏠 Ana sayfa warmup: %.1f sn bekleniyor...", delay)
+    await page.goto("https://www.youtube.com", wait_until="domcontentloaded")
+    await asyncio.sleep(delay)
+    await page.close()
+
+
 async def find_live_stream(page: Page) -> Optional[str]:
     """
     Streams sayfasında aktif canlı yayını ara.
@@ -603,6 +620,9 @@ async def run(email: str = "", password: str = "",
         if not logged_in:
             log.error("❌ Giriş yapılamadı. İşlem durduruluyor.")
             return
+
+        # ── Ana sayfa warmup ──────────────────────────────────────────────
+        await warmup_homepage(context)
 
         # ── Kanala Git + Yayınlar Sekmesi ─────────────────────────────────
         streams_page = await navigate_to_streams(context)
