@@ -38,6 +38,8 @@ KONFİGÜRASYON (yt_guardian_config.json — opsiyonel):
 # § 1 — IMPORTS
 # ═══════════════════════════════════════════════════════════════════════════════
 import os, sys, re, json, time, math, hashlib, threading, logging, unicodedata
+import concurrent.futures as cf
+import multiprocessing
 
 # 1) Imports bölümüne ekle
 import shutil
@@ -174,6 +176,10 @@ _DEFAULT_CFG = {
     "manual_login_timeout_sec": 180,
     "cookies_file":         "",
     "cookies_from_browser": "",
+    "scrape_workers":       8,
+    "db_batch_size":        1000,
+    "analyze_workers":      12,
+    "analyze_chunksize":    8,
 }
 
 def load_config(cfg_file: str = "yt_guardian_config.json") -> dict:
@@ -361,6 +367,14 @@ def db_exec(sql: str, params: tuple = (), fetch: str = None):
                 return [dict(r) for r in rows]
             return cur.lastrowid
 
+def db_exec_many(sql: str, params_list: List[tuple]):
+    if not params_list:
+        return 0
+    with _db_lock:
+        with _get_conn() as c:
+            cur = c.executemany(sql, params_list)
+            return cur.rowcount
+
 def upsert_message(msg: dict):
     sql = ("INSERT OR IGNORE INTO messages"
            "(id,video_id,title,video_date,author,author_cid,message,timestamp,"
@@ -370,6 +384,26 @@ def upsert_message(msg: dict):
                   msg["message"],msg.get("timestamp_utc",0),msg.get("lang_detected",""),
                   msg.get("script",""),msg.get("source_type","comment"),
                   int(msg.get("is_live",False))))
+
+def upsert_messages_bulk(msgs: List[Dict]):
+    if not msgs:
+        return 0
+    sql = ("INSERT OR IGNORE INTO messages"
+           "(id,video_id,title,video_date,author,author_cid,message,timestamp,"
+           "lang,script_type,source_type,is_live) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)")
+    batch_size = max(100, int(CFG.get("db_batch_size", 1000)))
+    rows = []
+    for m in msgs:
+        rows.append((
+            m["msg_id"], m.get("video_id",""), m.get("title",""), m.get("video_date",""),
+            m["author"], m.get("author_channel_id",""), m["message"], m.get("timestamp_utc",0),
+            m.get("lang_detected",""), m.get("script",""), m.get("source_type","comment"),
+            int(m.get("is_live",False)),
+        ))
+    written = 0
+    for i in range(0, len(rows), batch_size):
+        written += max(0, db_exec_many(sql, rows[i:i+batch_size]))
+    return written
 
 def upsert_profile(author: str, upd: dict):
     if not db_exec("SELECT 1 FROM user_profiles WHERE author=?", (author,), fetch="one"):
@@ -1182,24 +1216,58 @@ def full_scrape(emit_fn=None) -> int:
     if not videos:
         log.warning("Video bulunamadı"); return 0
         
-    total = 0
-    for i, vid in enumerate(videos):
+    def _scrape_one(vid: Dict) -> Dict:
         vid_id = vid["video_id"]; title = vid["title"]; date = vid["video_date"]
-        if emit_fn:
-            try: emit_fn({"step":i+1,"total":len(videos),"video_id":vid_id,"title":title})
-            except: pass
         comments = ytdlp_comments(vid_id, title, date, "stream")
         chats    = ytdlp_live_chat(vid_id, title, date)
-        all_msgs = comments + chats
-        for m in all_msgs:
-            upsert_message(m)
-        total += len(all_msgs)
-        db_exec("INSERT OR REPLACE INTO scraped_videos"
-                "(video_id,title,video_date,source_type,comment_count,chat_count)"
-                " VALUES(?,?,?,?,?,?)",
-                (vid_id,title,date,"stream",len(comments),len(chats)))
-        log.info("[%d/%d] %s — %d mesaj (toplam:%d)", i+1,len(videos),vid_id,len(all_msgs),total)
+        return {
+            "video_id": vid_id, "title": title, "video_date": date,
+            "comments": comments, "chats": chats, "all_msgs": comments + chats,
+        }
+
+    total = 0
+    workers = max(1, int(CFG.get("scrape_workers", 8)))
+    with cf.ThreadPoolExecutor(max_workers=workers) as ex:
+        fut_map = {ex.submit(_scrape_one, vid): idx for idx, vid in enumerate(videos, start=1)}
+        for fut in cf.as_completed(fut_map):
+            i = fut_map[fut]
+            try:
+                out = fut.result()
+            except Exception as e:
+                log.error("Video scrape hatası: %s", e)
+                continue
+            vid_id = out["video_id"]; title = out["title"]; date = out["video_date"]
+            comments = out["comments"]; chats = out["chats"]; all_msgs = out["all_msgs"]
+            upsert_messages_bulk(all_msgs)
+            total += len(all_msgs)
+            db_exec("INSERT OR REPLACE INTO scraped_videos"
+                    "(video_id,title,video_date,source_type,comment_count,chat_count)"
+                    " VALUES(?,?,?,?,?,?)",
+                    (vid_id,title,date,"stream",len(comments),len(chats)))
+            if emit_fn:
+                try: emit_fn({"step":i,"total":len(videos),"video_id":vid_id,"title":title})
+                except: pass
+            log.info("[%d/%d] %s — %d mesaj (toplam:%d)", i,len(videos),vid_id,len(all_msgs),total)
     return total
+
+def _analyze_user_worker(author: str) -> bool:
+    try:
+        analyze_user(author, run_ollama=False)
+        return True
+    except Exception:
+        return False
+
+def analyze_users_parallel(authors: List[str]) -> int:
+    if not authors:
+        return 0
+    workers = max(1, min(int(CFG.get("analyze_workers", 12)), multiprocessing.cpu_count()))
+    chunksize = max(1, int(CFG.get("analyze_chunksize", 8)))
+    ok = 0
+    with cf.ProcessPoolExecutor(max_workers=workers) as ex:
+        for res in ex.map(_analyze_user_worker, authors, chunksize=chunksize):
+            if res:
+                ok += 1
+    return ok
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # § 6b — NLP TABANLI OTOMATİK CANLI YAYIN TEKRAR SOHBETİ ÇEKME
@@ -3764,10 +3832,8 @@ def create_app():
     @app.route("/api/analyze/all", methods=["POST"])
     def api_analyze_all():
         rows=db_exec("SELECT DISTINCT author FROM messages WHERE deleted=0",fetch="all") or []
-        n=0
-        for r in rows:
-            try: analyze_user(r["author"], run_ollama=False); n+=1
-            except: pass
+        authors = [r["author"] for r in rows if r.get("author")]
+        n = analyze_users_parallel(authors)
         _qtable.save()
         return jsonify({"analyzed":n})
 
@@ -4007,15 +4073,10 @@ def create_app():
             if rows: fit_tfidf([r["message"] for r in rows])
             # ── BUG FIX: Scrape sonrası kullanıcı profillerini otomatik analiz et ──
             # Önceden user_profiles boş kalıyordu → tüm istatistikler 0 görünüyordu
-            analyzed = 0
             authors_rows = db_exec(
                 "SELECT DISTINCT author FROM messages WHERE deleted=0", fetch="all") or []
-            for ar in authors_rows:
-                try:
-                    analyze_user(ar["author"], run_ollama=False)
-                    analyzed += 1
-                except Exception as e:
-                    log.debug("Otomatik analiz @%s: %s", ar["author"], e)
+            authors = [r["author"] for r in authors_rows if r.get("author")]
+            analyzed = analyze_users_parallel(authors)
             _qtable.save()
             log.info("✅ Scrape sonrası %d kullanıcı otomatik analiz edildi", analyzed)
             # Konu modeli (yeterli veri varsa)
@@ -4200,20 +4261,18 @@ def main():
         total=full_scrape()
         log.info("✅ %d mesaj çekildi", total)
         rows=db_exec("SELECT DISTINCT author FROM messages WHERE deleted=0",fetch="all") or []
-        for r in rows:
-            try: analyze_user(r["author"], run_ollama=False)
-            except Exception as e: log.warning("@%s analiz hatası: %s",r["author"],e)
+        authors = [r["author"] for r in rows if r.get("author")]
+        analyzed = analyze_users_parallel(authors)
         _qtable.save()
-        log.info("✅ Analiz tamamlandı")
+        log.info("✅ Analiz tamamlandı (%d kullanıcı)", analyzed)
         return
 
     if args.analyze_all:
         rows=db_exec("SELECT DISTINCT author FROM messages WHERE deleted=0",fetch="all") or []
-        for r in rows:
-            try: analyze_user(r["author"], run_ollama=False)
-            except: pass
+        authors = [r["author"] for r in rows if r.get("author")]
+        analyzed = analyze_users_parallel(authors)
         _qtable.save()
-        log.info("✅ Tüm kullanıcı analizi tamamlandı")
+        log.info("✅ Tüm kullanıcı analizi tamamlandı (%d kullanıcı)", analyzed)
         return
 
     if not _FLASK:
