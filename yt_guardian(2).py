@@ -743,104 +743,43 @@ def export_cookies_from_driver(driver, cookie_file: str = None) -> bool:
 def make_driver(headless: bool = False):
     """
     Chromium WebDriver başlat.
-    - Otomasyon tespitini engelle (standalone script ile uyumlu)
-    - CFG üzerinden binary / profil / headless kontrolü
-    - CDP ile navigator.webdriver gizleme
+    Temel stealth ayarları ile automation izlerini azaltır.
     """
     if not _SELENIUM:
         return None
+
     try:
         _sanitize_chromium_env()
-        opts = ChromeOptions()
-
-        # ── Headless ──────────────────────────────────────────────────────────
+        options = ChromeOptions()
         if headless:
-            opts.add_argument("--headless=new")
+            options.add_argument("--headless=new")
 
-        # ── Otomasyon tespiti engelleme (standalone script ile örtüşen ayarlar) ─
-        opts.add_argument("--disable-blink-features=AutomationControlled")
-        opts.add_argument("--no-sandbox")
-        opts.add_argument("--disable-dev-shm-usage")
-        opts.add_argument("--window-size=1920,1080")
-        opts.add_argument("--start-maximized")
-        opts.add_argument("--mute-audio")
-        opts.add_argument("--disable-infobars")
-        opts.add_argument("--disable-notifications")
-        opts.add_argument("--disable-popup-blocking")
-        opts.add_argument("--disable-extensions")
-        opts.add_argument("--lang=tr-TR")
+        options.add_argument("--disable-blink-features=AutomationControlled")
+        options.add_experimental_option("excludeSwitches", ["enable-automation"])
+        options.add_experimental_option("useAutomationExtension", False)
+        options.add_argument(
+            "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/120.0.0.0 Safari/537.36"
+        )
 
-        # User-agent: gerçek Chromium Linux gibi görün
-        ua = CFG.get("chromium_user_agent", "").strip()
-        if not ua:
-            ua = (
-                "Mozilla/5.0 (X11; Linux x86_64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/124.0.0.0 Safari/537.36"
-            )
-        opts.add_argument(f"--user-agent={ua}")
-
-        # Experimental: otomasyon izlerini sil
-        opts.add_experimental_option("excludeSwitches", ["enable-automation", "enable-logging"])
-        opts.add_experimental_option("useAutomationExtension", False)
-
-        # Profil tercihleri
-        prefs = {
-            "profile.default_content_setting_values.notifications": 2,
-            "credentials_enable_service":       False,
-            "profile.password_manager_enabled": False,
-        }
-        opts.add_experimental_option("prefs", prefs)
-
-        # ── Kalıcı profil (cookie/oturum kalıcılığı) ─────────────────────────
-        user_data_dir = (CFG.get("chromium_user_data_dir") or "").strip()
-        profile_dir   = (CFG.get("chromium_profile_directory") or "Default").strip()
-        if user_data_dir:
-            opts.add_argument(f"--user-data-dir={user_data_dir}")
-            opts.add_argument(f"--profile-directory={profile_dir}")
-            log.info("Chromium kalıcı profil: %s / %s", user_data_dir, profile_dir)
-
-        # ── Binary çözümü ────────────────────────────────────────────────────
         chrome_bin = (CFG.get("chromium_binary") or os.environ.get("CHROMIUM_BIN") or "").strip()
         if chrome_bin and _is_chromium_binary(chrome_bin):
-            opts.binary_location = chrome_bin
-            log.info("Chromium binary (CFG/env): %s", chrome_bin)
+            options.binary_location = chrome_bin
         else:
             resolved = _resolve_chromium_binary()
             if resolved:
-                opts.binary_location = resolved
-                log.info("Chromium binary (otomatik): %s", resolved)
-            else:
-                log.warning("Chromium binary bulunamadı; Selenium Manager fallback.")
+                options.binary_location = resolved
 
-        drv = webdriver.Chrome(options=opts)
-        drv.set_page_load_timeout(int(CFG.get("page_load_timeout", 60)))
-
-        # ── CDP: navigator.webdriver = undefined ─────────────────────────────
-        try:
-            drv.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {"source": """
-                Object.defineProperty(navigator, 'webdriver',   {get: () => undefined});
-                Object.defineProperty(navigator, 'plugins',     {get: () => [1,2,3,4,5]});
-                Object.defineProperty(navigator, 'languages',   {get: () => ['tr-TR','tr','en-US','en']});
-                window.chrome = {runtime: {}};
-                Object.defineProperty(navigator, 'permissions', {
-                    get: () => ({
-                        query: p => Promise.resolve({
-                            state: p.name === 'notifications' ? Notification.permission : 'granted'
-                        })
-                    })
-                });
-            """})
-        except Exception as cdp_err:
-            log.debug("CDP stealth script uygulanamadı: %s", cdp_err)
-
-        log.info("✅ Chromium WebDriver başlatıldı (stealth mod)")
-        return drv
-
+        driver = webdriver.Chrome(options=options)
+        driver.execute_cdp_cmd(
+            "Page.addScriptToEvaluateOnNewDocument",
+            {"source": "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"},
+        )
+        return driver
     except Exception as e:
         log.error("Chromium başlatılamadı: %s", e)
         return None
-
 
 def is_driver_alive(driver) -> bool:
     if not driver:
@@ -949,174 +888,43 @@ def _save_screenshot(driver, name: str):
 
 
 def yt_login(driver, email: str, password: str) -> bool:
-    """
-    Google/YouTube otomatik giriş.
-    ─────────────────────────────
-    Standalone script mantığı YT Guardian'a entegre edildi:
-      • Aynı otomasyon-kaçınma seçenekleri (make_driver ile ortaklaşa)
-      • E-posta: identifierId → Keys.ENTER (standalone gibi)
-      • Buton yoksa Keys.ENTER fallback
-      • Şifre: By.NAME "Passwd" öncelikli (standalone gibi) → Keys.ENTER
-      • 180 saniyelik polling döngüsü (manuel tamamlama için)
-      • Başarılı girişte cookie export (yt-dlp için)
-
-    Kimlik bilgileri SADECE CFG veya parametre üzerinden gelir — hard-code yok.
-    """
+    """Google hesabına temel giriş akışı."""
     if not driver:
         return False
 
-    data_dir = Path(CFG.get("data_dir", "yt_data"))
-    data_dir.mkdir(parents=True, exist_ok=True)
-
-    wait_sec = int(CFG.get("selenium_wait", 15))   # standalone default: 15s
-    manual_timeout = int(CFG.get("manual_login_timeout_sec", 180) or 180)
-
+    wait = WebDriverWait(driver, 20)
     try:
-        if not is_driver_alive(driver):
-            log.error("yt_login: Chromium oturumu kapalı.")
-            return False
+        driver.get("https://accounts.google.com/signin")
 
-        # ── Oturum zaten açık mı? ────────────────────────────────────────────
-        driver.get("https://www.youtube.com")
-        time.sleep(2)
-        cur = driver.current_url or ""
-        if "youtube.com" in cur and "accounts.google.com" not in cur:
-            try:
-                driver.find_element(By.CSS_SELECTOR, "button#avatar-btn,yt-img-shadow#avatar")
-                log.info("✅ YouTube oturumu aktif — giriş atlandı")
-                return True
-            except Exception:
-                pass  # avatar yoksa yeniden giriş yap
-
-        # ── Manuel mod ───────────────────────────────────────────────────────
-        if not email or not password:
-            log.warning("E-posta/şifre sağlanmadı — manuel giriş bekleniyor (%ds)...", manual_timeout)
-            driver.get("https://accounts.google.com/signin")
-            deadline = time.time() + manual_timeout
-            while time.time() < deadline:
-                c = (driver.current_url or "").lower()
-                if "youtube.com" in c and "accounts.google.com" not in c:
-                    log.info("✅ Manuel giriş algılandı")
-                    export_cookies_from_driver(driver)
-                    return True
-                time.sleep(2)
-            log.error("⛔ Manuel giriş zaman aşımı")
-            return False
-
-        # ── Otomatik giriş ───────────────────────────────────────────────────
-        # ServiceLogin: YouTube servisine yönelik — bot tespiti daha düşük
-        login_url = (
-            "https://accounts.google.com/ServiceLogin"
-            "?service=youtube&uilel=3&passive=true"
-            "&continue=https%3A%2F%2Fwww.youtube.com%2Fsignin"
-            "%3Faction_handle_signin%3Dtrue%26app%3Ddesktop%26hl%3Dtr%26next%3D%252F"
-            "&hl=tr"
-        )
-        driver.get(login_url)
-        time.sleep(2)
-        wait = WebDriverWait(driver, wait_sec)
-
-        # ── ADIM 1 — E-posta ─────────────────────────────────────────────────
-        log.info("[Login 1/4] E-posta giriliyor...")
-        ef = _locate_first(wait, _EMAIL_STRATEGIES, EC.presence_of_element_located)
-        if ef is None:
-            # Fallback: doğrudan identifier sayfasına git
-            driver.get("https://accounts.google.com/signin/v2/identifier?hl=tr&flowName=GlifWebSignIn")
-            time.sleep(2)
-            ef = _locate_first(wait, _EMAIL_STRATEGIES, EC.presence_of_element_located)
-        if ef is None:
-            _save_screenshot(driver, "login_no_email_field.png")
-            log.error("E-posta alanı bulunamadı")
-            return False
-
-        _human_type(ef, email, driver)
-        time.sleep(0.5)
-
-        # ── ADIM 2 — E-posta Sonraki ─────────────────────────────────────────
-        log.info("[Login 2/4] 'Sonraki' butonu...")
-        next_btn = _locate_first(wait, _NEXT_BTN_STRATEGIES)
-        if next_btn:
-            time.sleep(0.3)
-            _safe_click(driver, next_btn)
-        else:
-            # Standalone fallback: Keys.ENTER
-            log.warning("'Sonraki' butonu bulunamadı — Keys.ENTER fallback")
-            ef.send_keys(Keys.ENTER)
-        log.info("  ↳ E-posta gönderildi")
-
-        # ── ADIM 3 — Şifre ───────────────────────────────────────────────────
-        log.info("[Login 3/4] Şifre alanı bekleniyor...")
-        time.sleep(2.5)
-        pf = _locate_first(wait, _PASS_STRATEGIES)
-        if pf is None:
-            _save_screenshot(driver, "login_no_pass_field.png")
-            log.error("Şifre alanı bulunamadı — URL: %s", driver.current_url)
-            # Son çare: manuel tamamlama (standalone'daki 180s loop)
-            log.warning("180 saniyelik manuel tamamlama bekleniyor...")
-            deadline = time.time() + manual_timeout
-            while time.time() < deadline:
-                c = (driver.current_url or "").lower()
-                if "youtube.com" in c and "accounts.google.com" not in c:
-                    export_cookies_from_driver(driver)
-                    return True
-                time.sleep(2)
-            return False
-
-        _human_type(pf, password, driver)
-        time.sleep(0.5)
-
-        # ── ADIM 4 — Şifre Sonraki ───────────────────────────────────────────
-        log.info("[Login 4/4] Şifre 'Sonraki' butonu...")
-        pw_btn = _locate_first(wait, _PASS_NEXT_STRATEGIES)
-        if pw_btn:
-            time.sleep(0.3)
-            _safe_click(driver, pw_btn)
-        else:
-            log.warning("Şifre butonu bulunamadı — Keys.ENTER fallback")
-            pf.send_keys(Keys.ENTER)
-
-        # ── Oturum doğrulama + CAPTCHA/2FA bekleme ───────────────────────────
+        email_input = wait.until(EC.presence_of_element_located((By.NAME, "identifier")))
+        email_input.send_keys(email)
+        email_input.send_keys(Keys.ENTER)
         time.sleep(4)
-        cur = driver.current_url or ""
-        if "accounts.google.com" in cur:
-            _save_screenshot(driver, "login_challenge.png")
-            log.warning(
-                "⚠️ Google doğrulama ekranı (CAPTCHA / 2FA?). "
-                "Ekran: yt_data/login_challenge.png — %ds içinde manuel tamamlayın.",
-                manual_timeout
-            )
-            deadline = time.time() + manual_timeout
-            while time.time() < deadline:
-                if "accounts.google.com" not in (driver.current_url or ""):
-                    log.info("✅ Doğrulama manuel tamamlandı")
-                    break
-                time.sleep(3)
 
-        # YouTube'a yönlendir
-        driver.get("https://www.youtube.com")
-        time.sleep(2)
-        ok = (
-            "youtube.com"          in (driver.current_url or "") and
-            "accounts.google.com" not in (driver.current_url or "")
-        )
+        password_input = wait.until(EC.element_to_be_clickable((By.NAME, "Passwd")))
+        password_input.send_keys(password)
+        password_input.send_keys(Keys.ENTER)
 
-        if ok:
-            export_cookies_from_driver(driver)
-            log.info("✅ YouTube girişi başarılı: %s", email)
-        else:
-            _save_screenshot(driver, "login_failed.png")
-            log.error("❌ YouTube girişi başarısız | URL: %s", driver.current_url)
+        print("Giriş onayı bekleniyor...")
+        time.sleep(5)
 
-        return ok
-
-    except (InvalidSessionIdException, WebDriverException) as e:
-        log.error("yt_login — Chromium oturumu düştü: %s", e)
-        return False
+        export_cookies_from_driver(driver)
+        return True
     except Exception as e:
-        log.error("yt_login — beklenmedik hata: %s", e)
-        _save_screenshot(driver, "login_error.png")
-        traceback.print_exc()
+        print(f"Login Hatası: {e}")
         return False
+
+
+def go_to_shmirchik(driver, mode: str = "streams"):
+    """Shmirchik kanalında hedef sekmeye direkt URL ile git."""
+    if mode == "streams":
+        target_url = "https://www.youtube.com/@ShmirchikArt/streams"
+    else:
+        target_url = "https://www.youtube.com/@ShmirchikArt/videos"
+
+    print(f"Hedef sayfaya gidiliyor: {target_url}")
+    driver.get(target_url)
+    time.sleep(5)
 
 
 # ── TARİH ÇÖZÜCÜ ─────────────────────────────────────────────────────────────
@@ -4640,6 +4448,9 @@ def create_app():
                         pass
                 return
             ok = yt_login(_driver, em, pw)
+            if ok:
+                mode = "streams" if "streams" in (CFG.get("channel_url", "") or "") else "videos"
+                go_to_shmirchik(_driver, mode=mode)
             if _sio:
                 try:
                     _sio.emit("login_result", {"success": ok, "email": em}, namespace="/ws")
@@ -4802,7 +4613,10 @@ def main():
             if not _driver:
                 log.error("Otomatik login için driver oluşturulamadı.")
                 return
-            yt_login(_driver, CFG["yt_email"], CFG["yt_password"])
+            ok = yt_login(_driver, CFG["yt_email"], CFG["yt_password"])
+            if ok:
+                mode = "streams" if "streams" in (CFG.get("channel_url", "") or "") else "videos"
+                go_to_shmirchik(_driver, mode=mode)
         threading.Thread(target=_auto_login, daemon=True).start()
 
     result = create_app()
