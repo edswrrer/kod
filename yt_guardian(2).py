@@ -43,8 +43,8 @@ log = logging.getLogger("YTGv5")
 
 # ─── Varsayılan Yapılandırma (gir.py ile uyumlu) ──────────────────────────────
 _DEFAULT_CFG = {
-    "yt_email":    "physicus93@hotmail.com",
-    "yt_password": "%C7JdE4,)$MS;4'",
+    "yt_email":    "",
+    "yt_password": "",
     "target_channel": "https://www.youtube.com/@ShmirchikArt",
     "target_streams": "https://www.youtube.com/@ShmirchikArt/streams",
     "manual_login_timeout_sec": 180,
@@ -52,6 +52,11 @@ _DEFAULT_CFG = {
     "data_dir": "./yt_data",
     "cookies_file": "yt_cookies.json",
     "user_data_dir": "./playwright_profile",   # kalıcı profil (oturum hatırlama)
+    "manual_login_on_security_rejection": True,
+    "force_manual_login": False,
+    "login_mode": "manual_only",  # manual_only | auto_if_credentials
+    "warmup_home_min_sec": 5,
+    "warmup_home_max_sec": 10,
 }
 
 def load_config(cfg_file: str = "yt_guardian_config.json") -> dict:
@@ -231,10 +236,14 @@ async def yt_login(context: BrowserContext, email: str, password: str) -> bool:
         except Exception:
             pass  # Avatar yoksa giriş akışına devam
 
+        force_manual_login = bool(CFG.get("force_manual_login", False))
+        login_mode = str(CFG.get("login_mode", "manual_only")).strip().lower()
+        auto_login_enabled = (login_mode == "auto_if_credentials")
+
         # ── Otomatik giriş ─────────────────────────────────────────────────
-        if not email or not password:
-            log.warning("E-posta/şifre sağlanmadı — manuel giriş bekleniyor...")
-            await page.goto("https://accounts.google.com/signin")
+        if force_manual_login or not auto_login_enabled or not email or not password:
+            log.warning("Manuel giriş modu aktif — tarayıcıda hesabınızla giriş yapın.")
+            await page.goto("https://accounts.google.com/signin/v2/identifier?service=youtube")
             return await _wait_for_login(page)
 
         # gir.py: driver.get("https://accounts.google.com/signin")
@@ -248,6 +257,17 @@ async def yt_login(context: BrowserContext, email: str, password: str) -> bool:
         log.info("🚀 Google giriş sayfası açılıyor...")
         await page.goto(login_url, wait_until="domcontentloaded")
         await asyncio.sleep(2)
+
+        # Google "Bu tarayıcı veya uygulama güvenli olmayabilir" ekranı
+        if "signin/rejected" in page.url:
+            await page.screenshot(path="login_rejected.png")
+            log.warning("⚠️ Güvenlik reddi algılandı (signin/rejected): %s", page.url)
+            if CFG.get("manual_login_on_security_rejection", True):
+                log.info("↪️ Manuel giriş fallback başlatılıyor (kalıcı profil ile).")
+                await page.goto("https://accounts.google.com/signin/v2/identifier?service=youtube")
+                return await _wait_for_login(page)
+            await page.close()
+            return False
 
         # ── ADIM 1: E-posta ────────────────────────────────────────────────
         log.info("[1/4] E-posta giriliyor...")
@@ -406,6 +426,23 @@ async def navigate_to_streams(context: BrowserContext) -> Page:
 
     log.info("🎯 Hedef sayfaya ulaşıldı: %s", page.url)
     return page
+
+
+async def warmup_homepage(context: BrowserContext):
+    """
+    YouTube ana sayfaya gidip kısa bir bekleme uygula.
+    Amaç: oturum/cookie yönlendirmelerinin tamamlanmasını beklemek.
+    """
+    page = await context.new_page()
+    min_sec = int(CFG.get("warmup_home_min_sec", 5))
+    max_sec = int(CFG.get("warmup_home_max_sec", 10))
+    if min_sec > max_sec:
+        min_sec, max_sec = max_sec, min_sec
+    delay = random.uniform(min_sec, max_sec)
+    log.info("🏠 Ana sayfa warmup: %.1f sn bekleniyor...", delay)
+    await page.goto("https://www.youtube.com", wait_until="domcontentloaded")
+    await asyncio.sleep(delay)
+    await page.close()
 
 
 async def find_live_stream(page: Page) -> Optional[str]:
@@ -588,6 +625,9 @@ async def run(email: str = "", password: str = "",
         if not logged_in:
             log.error("❌ Giriş yapılamadı. İşlem durduruluyor.")
             return
+
+        # ── Ana sayfa warmup ──────────────────────────────────────────────
+        await warmup_homepage(context)
 
         # ── Kanala Git + Yayınlar Sekmesi ─────────────────────────────────
         streams_page = await navigate_to_streams(context)
