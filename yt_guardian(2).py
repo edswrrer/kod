@@ -4,7 +4,7 @@
 ╔══════════════════════════════════════════════════════════════════════════════╗
 ║        YT GUARDIAN v2.0 — TAM ÇALIŞAN TEK-DOSYA MODERASYON SİSTEMİ        ║
 ║  @ShmirchikArt · NLP·BART·RL·Graf·Bayes·HMM·Oyun Kuramı·Stilometri·GMM   ║
-║  Lokal AI (Ollama phi4:14b SADECE yorum için) · ROCm GPU · Selenium Chromium║
+║  Lokal AI (Ollama phi4:14b SADECE yorum için) · ROCm GPU · Selenium FF     ║
 ╚══════════════════════════════════════════════════════════════════════════════╝
 
 KURULUM (Ubuntu):
@@ -1535,14 +1535,7 @@ def ytdlp_live_chat(video_id: str, title: str = "", video_date: str = "") -> Lis
     return msgs
 
 def selenium_live_chat(driver, video_id: str, title: str = "") -> List[Dict]:
-    """
-    Selenium Chromium ile canlı yayın chat mesajlarını çek.
-    analizor akışındaki mantıkla:
-      1) İzleme sayfasını aç
-      2) live_chat iframe'ini tespit et (varsa iframe'e geç)
-      3) Mesajları topla
-      4) Ana belgeye geri dön
-    """
+    """Selenium ile canlı yayın chat mesajlarını çek"""
     if not driver: return []
     if not is_driver_alive(driver):
         log.warning("Selenium live chat atlandı: Chromium oturumu kapalı/geçersiz.")
@@ -1550,21 +1543,7 @@ def selenium_live_chat(driver, video_id: str, title: str = "") -> List[Dict]:
     msgs = []
     try:
         driver.get(f"https://www.youtube.com/watch?v={video_id}")
-        time.sleep(5)
-
-        # analizor mantığı: önce live_chat iframe ara, varsa oradan oku
-        chat_in_iframe = False
-        try:
-            frames = driver.find_elements(By.CSS_SELECTOR, "iframe")
-            for fr in frames:
-                src = (fr.get_attribute("src") or "").lower()
-                if "live_chat" in src:
-                    driver.switch_to.frame(fr)
-                    chat_in_iframe = True
-                    break
-        except Exception:
-            pass
-
+        time.sleep(4)
         now_ts = int(time.time())
         items = driver.find_elements(By.CSS_SELECTOR,
             "yt-live-chat-text-message-renderer,yt-live-chat-paid-message-renderer")
@@ -1578,11 +1557,6 @@ def selenium_live_chat(driver, video_id: str, title: str = "") -> List[Dict]:
                                       "source_type":"live","is_live":True})
                     if m: msgs.append(m)
             except: pass
-        if chat_in_iframe:
-            try:
-                driver.switch_to.default_content()
-            except Exception:
-                pass
     except (InvalidSessionIdException, WebDriverException) as e:
         log.warning("Selenium live chat oturum hatası: %s", e)
     except Exception as e:
@@ -3509,11 +3483,11 @@ mark{background:rgba(88,166,255,.25);color:var(--tx);border-radius:2px;padding:0
 <!-- AYARLAR -->
 <div id="tab-settings" class="tab">
   <div class="card"><h3>Sistem Durumu</h3><div id="sys-status"></div></div>
-  <div class="card"><h3>YouTube Giriş (Chromium)</h3>
+  <div class="card"><h3>YouTube Giriş (Firefox)</h3>
     <div style="display:flex;flex-direction:column;gap:8px;max-width:360px">
       <input class="inp" id="yt-em" placeholder="E-posta" style="width:100%">
       <input class="inp" type="password" id="yt-pw" placeholder="Şifre" style="width:100%">
-      <button class="btn" onclick="doLogin()">🔑 Chromium ile Giriş Yap</button>
+      <button class="btn" onclick="doLogin()">🔑 Firefox ile Giriş Yap</button>
       <div id="login-msg" style="font-size:11px;color:var(--tx2)"></div>
     </div>
   </div>
@@ -4787,7 +4761,7 @@ def main():
     parser.add_argument("--analyze-all", action="store_true", help="Tüm kullanıcıları analiz et")
     parser.add_argument("--port",  type=int, default=CFG.get("flask_port",5000))
     parser.add_argument("--config",type=str, default="yt_guardian_config.json")
-    parser.add_argument("--headless",    action="store_true", help="Chromium headless modda aç")
+    parser.add_argument("--headless",    action="store_true", help="Firefox headless modda aç")
     parser.add_argument("--login",       action="store_true", help="Başlarken YouTube'a giriş yap")
     args = parser.parse_args()
 
