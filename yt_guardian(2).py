@@ -54,9 +54,6 @@ _DEFAULT_CFG = {
     "user_data_dir": "./playwright_profile",   # kalıcı profil (oturum hatırlama)
     "manual_login_on_security_rejection": True,
     "force_manual_login": False,
-    "login_mode": "manual_only",  # manual_only | auto_if_credentials
-    "warmup_home_min_sec": 5,
-    "warmup_home_max_sec": 10,
 }
 
 def load_config(cfg_file: str = "yt_guardian_config.json") -> dict:
@@ -237,12 +234,10 @@ async def yt_login(context: BrowserContext, email: str, password: str) -> bool:
             pass  # Avatar yoksa giriş akışına devam
 
         force_manual_login = bool(CFG.get("force_manual_login", False))
-        login_mode = str(CFG.get("login_mode", "manual_only")).strip().lower()
-        auto_login_enabled = (login_mode == "auto_if_credentials")
 
         # ── Otomatik giriş ─────────────────────────────────────────────────
-        if force_manual_login or not auto_login_enabled or not email or not password:
-            log.warning("Manuel giriş modu aktif — tarayıcıda hesabınızla giriş yapın.")
+        if force_manual_login or not email or not password:
+            log.warning("E-posta/şifre sağlanmadı — manuel giriş bekleniyor...")
             await page.goto("https://accounts.google.com/signin/v2/identifier?service=youtube")
             return await _wait_for_login(page)
 
