@@ -1,9 +1,15 @@
 """
 Hard-fix patch for edswrrer/general app_v2.py indexing inconsistency.
 
-Top-level knobs (program başından değiştirilebilir):
-- RAG_VIDEO_LIMIT: RAG/indexing tarafında işlenecek maksimum video sayısı.
-  Varsayılan 20 (isteğe göre değiştir).
+This file is a drop-in patch module intended to be imported from the original
+app_v2.py. It hard-codes architectural safeguards for:
+
+1) Single shared runtime (no split in-memory state between background tasks and API).
+2) Absolute data paths (DB/Chroma always point to one physical location).
+3) Forced stats reconciliation from SQLite + Chroma before responding.
+4) Strict process-existing behavior: if no candidates are selected while videos
+   exist, pipeline state becomes "empty_source" instead of fake "completed".
+5) Ask endpoint guard based on real chunk/chroma counts, not volatile status flags.
 """
 
 from __future__ import annotations
@@ -12,11 +18,6 @@ import sqlite3
 from pathlib import Path
 from threading import Lock
 from typing import Dict, Any
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Program başından değiştirilebilir sabitler
-# ──────────────────────────────────────────────────────────────────────────────
-RAG_VIDEO_LIMIT = 20
 
 
 class RuntimeHardFix:
@@ -49,8 +50,8 @@ def connect_db(db_path: str) -> sqlite3.Connection:
     return conn
 
 
-def safe_count(c: sqlite3.Cursor, sql: str, params: tuple = ()) -> int:
-    row = c.execute(sql, params).fetchone()
+def safe_count(c: sqlite3.Cursor, sql: str) -> int:
+    row = c.execute(sql).fetchone()
     return int(row[0]) if row and row[0] is not None else 0
 
 
@@ -62,7 +63,6 @@ def reconcile_stats(db: sqlite3.Connection, chroma_count: int) -> Dict[str, int]
         "chunks": safe_count(c, "SELECT COUNT(*) FROM chunks"),
         "relations": safe_count(c, "SELECT COUNT(*) FROM relations"),
         "chroma": int(chroma_count or 0),
-        "rag_video_limit": int(RAG_VIDEO_LIMIT),
     }
 
     # Hard architectural fallback: if processed is stale, derive from chunked videos.
@@ -78,14 +78,7 @@ def reconcile_stats(db: sqlite3.Connection, chroma_count: int) -> Dict[str, int]
     return stats
 
 
-def pick_process_existing_candidates(
-    db: sqlite3.Connection,
-    rag_video_limit: int = RAG_VIDEO_LIMIT,
-) -> Dict[str, Any]:
-    """
-    Process-existing adaylarını döndürür ve RAG tarafında işlenecek video sayısını
-    hard-limit ile sınırlar (varsayılan 20).
-    """
+def pick_process_existing_candidates(db: sqlite3.Connection) -> Dict[str, Any]:
     c = db.cursor()
     total_videos = safe_count(c, "SELECT COUNT(*) FROM videos")
     rows = c.execute(
@@ -99,10 +92,7 @@ def pick_process_existing_candidates(
         ) cc ON cc.video_id = v.id
         WHERE COALESCE(TRIM(v.transcript), '') <> ''
           AND (v.processed = 0 OR COALESCE(cc.chunk_count, 0) = 0)
-        ORDER BY v.id DESC
-        LIMIT ?
-        """,
-        (int(rag_video_limit),),
+        """
     ).fetchall()
 
     candidates = [r[0] for r in rows]
@@ -110,7 +100,6 @@ def pick_process_existing_candidates(
     return {
         "state": state,
         "total_videos": total_videos,
-        "rag_video_limit": int(rag_video_limit),
         "candidates": candidates,
     }
 
@@ -120,10 +109,7 @@ def ask_guard(stats: Dict[str, int]) -> Dict[str, Any]:
         return {
             "ok": False,
             "error": "No data indexed yet. Index transcript-bearing videos first.",
-            "hint": (
-                "Use process-existing after ensuring videos.transcript is populated "
-                f"(current RAG_VIDEO_LIMIT={RAG_VIDEO_LIMIT})."
-            ),
+            "hint": "Use process-existing after ensuring videos.transcript is populated.",
             "stats": stats,
         }
     return {"ok": True, "stats": stats}
