@@ -38,8 +38,6 @@ KONFİGÜRASYON (yt_guardian_config.json — opsiyonel):
 # § 1 — IMPORTS
 # ═══════════════════════════════════════════════════════════════════════════════
 import os, sys, re, json, time, math, hashlib, threading, logging, unicodedata
-import concurrent.futures as cf
-import multiprocessing
 
 # 1) Imports bölümüne ekle
 import shutil
@@ -176,10 +174,6 @@ _DEFAULT_CFG = {
     "manual_login_timeout_sec": 180,
     "cookies_file":         "",
     "cookies_from_browser": "",
-    "scrape_workers":       8,
-    "db_batch_size":        1000,
-    "analyze_workers":      12,
-    "analyze_chunksize":    8,
 }
 
 def load_config(cfg_file: str = "yt_guardian_config.json") -> dict:
@@ -367,14 +361,6 @@ def db_exec(sql: str, params: tuple = (), fetch: str = None):
                 return [dict(r) for r in rows]
             return cur.lastrowid
 
-def db_exec_many(sql: str, params_list: List[tuple]):
-    if not params_list:
-        return 0
-    with _db_lock:
-        with _get_conn() as c:
-            cur = c.executemany(sql, params_list)
-            return cur.rowcount
-
 def upsert_message(msg: dict):
     sql = ("INSERT OR IGNORE INTO messages"
            "(id,video_id,title,video_date,author,author_cid,message,timestamp,"
@@ -384,26 +370,6 @@ def upsert_message(msg: dict):
                   msg["message"],msg.get("timestamp_utc",0),msg.get("lang_detected",""),
                   msg.get("script",""),msg.get("source_type","comment"),
                   int(msg.get("is_live",False))))
-
-def upsert_messages_bulk(msgs: List[Dict]):
-    if not msgs:
-        return 0
-    sql = ("INSERT OR IGNORE INTO messages"
-           "(id,video_id,title,video_date,author,author_cid,message,timestamp,"
-           "lang,script_type,source_type,is_live) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)")
-    batch_size = max(100, int(CFG.get("db_batch_size", 1000)))
-    rows = []
-    for m in msgs:
-        rows.append((
-            m["msg_id"], m.get("video_id",""), m.get("title",""), m.get("video_date",""),
-            m["author"], m.get("author_channel_id",""), m["message"], m.get("timestamp_utc",0),
-            m.get("lang_detected",""), m.get("script",""), m.get("source_type","comment"),
-            int(m.get("is_live",False)),
-        ))
-    written = 0
-    for i in range(0, len(rows), batch_size):
-        written += max(0, db_exec_many(sql, rows[i:i+batch_size]))
-    return written
 
 def upsert_profile(author: str, upd: dict):
     if not db_exec("SELECT 1 FROM user_profiles WHERE author=?", (author,), fetch="one"):
@@ -1216,58 +1182,24 @@ def full_scrape(emit_fn=None) -> int:
     if not videos:
         log.warning("Video bulunamadı"); return 0
         
-    def _scrape_one(vid: Dict) -> Dict:
+    total = 0
+    for i, vid in enumerate(videos):
         vid_id = vid["video_id"]; title = vid["title"]; date = vid["video_date"]
+        if emit_fn:
+            try: emit_fn({"step":i+1,"total":len(videos),"video_id":vid_id,"title":title})
+            except: pass
         comments = ytdlp_comments(vid_id, title, date, "stream")
         chats    = ytdlp_live_chat(vid_id, title, date)
-        return {
-            "video_id": vid_id, "title": title, "video_date": date,
-            "comments": comments, "chats": chats, "all_msgs": comments + chats,
-        }
-
-    total = 0
-    workers = max(1, int(CFG.get("scrape_workers", 8)))
-    with cf.ThreadPoolExecutor(max_workers=workers) as ex:
-        fut_map = {ex.submit(_scrape_one, vid): idx for idx, vid in enumerate(videos, start=1)}
-        for fut in cf.as_completed(fut_map):
-            i = fut_map[fut]
-            try:
-                out = fut.result()
-            except Exception as e:
-                log.error("Video scrape hatası: %s", e)
-                continue
-            vid_id = out["video_id"]; title = out["title"]; date = out["video_date"]
-            comments = out["comments"]; chats = out["chats"]; all_msgs = out["all_msgs"]
-            upsert_messages_bulk(all_msgs)
-            total += len(all_msgs)
-            db_exec("INSERT OR REPLACE INTO scraped_videos"
-                    "(video_id,title,video_date,source_type,comment_count,chat_count)"
-                    " VALUES(?,?,?,?,?,?)",
-                    (vid_id,title,date,"stream",len(comments),len(chats)))
-            if emit_fn:
-                try: emit_fn({"step":i,"total":len(videos),"video_id":vid_id,"title":title})
-                except: pass
-            log.info("[%d/%d] %s — %d mesaj (toplam:%d)", i,len(videos),vid_id,len(all_msgs),total)
+        all_msgs = comments + chats
+        for m in all_msgs:
+            upsert_message(m)
+        total += len(all_msgs)
+        db_exec("INSERT OR REPLACE INTO scraped_videos"
+                "(video_id,title,video_date,source_type,comment_count,chat_count)"
+                " VALUES(?,?,?,?,?,?)",
+                (vid_id,title,date,"stream",len(comments),len(chats)))
+        log.info("[%d/%d] %s — %d mesaj (toplam:%d)", i+1,len(videos),vid_id,len(all_msgs),total)
     return total
-
-def _analyze_user_worker(author: str) -> bool:
-    try:
-        analyze_user(author, run_ollama=False)
-        return True
-    except Exception:
-        return False
-
-def analyze_users_parallel(authors: List[str]) -> int:
-    if not authors:
-        return 0
-    workers = max(1, min(int(CFG.get("analyze_workers", 12)), multiprocessing.cpu_count()))
-    chunksize = max(1, int(CFG.get("analyze_chunksize", 8)))
-    ok = 0
-    with cf.ProcessPoolExecutor(max_workers=workers) as ex:
-        for res in ex.map(_analyze_user_worker, authors, chunksize=chunksize):
-            if res:
-                ok += 1
-    return ok
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # § 6b — NLP TABANLI OTOMATİK CANLI YAYIN TEKRAR SOHBETİ ÇEKME
@@ -2894,11 +2826,22 @@ mark{background:rgba(88,166,255,.25);color:var(--tx);border-radius:2px;padding:0
     <button class="btn" onclick="analyzeAll()">⚡ Tümünü Analiz Et</button>
     <button class="btn ghost" onclick="doClustering()">🕸️ Kümeleme</button>
     <button class="btn ghost" onclick="inspectNewAccounts()">🆕 Yeni Hesaplar</button>
+    <button class="btn ghost" id="ollama-all-btn" onclick="ollamaAnalyzeAll()">🤖 Ollama ile Analiz</button>
     <span id="ucnt" style="color:var(--tx2);font-size:11px;margin-left:auto"></span>
   </div>
   <table class="tbl">
-    <thead><tr><th>Kullanıcı</th><th>Msg</th><th>Tehdit</th><th>Bot%</th>
-    <th>Nefret%</th><th>AntiSem%</th><th>Stalker%</th><th>HMM</th><th>Skor</th><th>İşlem</th></tr></thead>
+    <thead><tr>
+      <th onclick="sortUsers('author')" style="cursor:pointer;user-select:none">Kullanıcı <span id="sh-author"></span></th>
+      <th onclick="sortUsers('msg_count')" style="cursor:pointer;user-select:none">Msg <span id="sh-msg_count"></span></th>
+      <th onclick="sortUsers('threat_level')" style="cursor:pointer;user-select:none">Tehdit <span id="sh-threat_level"></span></th>
+      <th onclick="sortUsers('bot_prob')" style="cursor:pointer;user-select:none">Bot% <span id="sh-bot_prob"></span></th>
+      <th onclick="sortUsers('hate_score')" style="cursor:pointer;user-select:none">Nefret% <span id="sh-hate_score"></span></th>
+      <th onclick="sortUsers('antisemitism_score')" style="cursor:pointer;user-select:none">AntiSem% <span id="sh-antisemitism_score"></span></th>
+      <th onclick="sortUsers('stalker_score')" style="cursor:pointer;user-select:none">Stalker% <span id="sh-stalker_score"></span></th>
+      <th onclick="sortUsers('hmm_state')" style="cursor:pointer;user-select:none">HMM <span id="sh-hmm_state"></span></th>
+      <th onclick="sortUsers('threat_score')" style="cursor:pointer;user-select:none">Skor <span id="sh-threat_score">▼</span></th>
+      <th>İşlem</th>
+    </tr></thead>
     <tbody id="utbody"></tbody>
   </table>
   <div class="pager" id="upager"></div>
@@ -3121,10 +3064,28 @@ function addAlert(d){
 }
 
 // ── KULLANICILAR ──────────────────────────────────────────────────────────────
+var userSort={col:'threat_score',dir:'desc'};
+
+function sortUsers(col){
+  if(userSort.col===col){
+    userSort.dir=userSort.dir==='desc'?'asc':'desc';
+  } else {
+    userSort.col=col;
+    userSort.dir='desc';
+  }
+  ['author','msg_count','threat_level','bot_prob','hate_score',
+   'antisemitism_score','stalker_score','hmm_state','threat_score'].forEach(function(c){
+    $('#sh-'+c).text('');
+  });
+  $('#sh-'+col).text(userSort.dir==='desc'?'\u25BC':'\u25B2');
+  loadUsers(1);
+}
+
 function loadUsers(p){
   if(p) page.users=p;
   $.get('/api/users',{page:page.users,size:pgSize,
-    filter:$('#uf').val(),threat:$('#tf').val()},function(d){
+    filter:$('#uf').val(),threat:$('#tf').val(),
+    sort_col:userSort.col,sort_dir:userSort.dir},function(d){
     $('#ucnt').text(d.total+' kullanıcı');
     let h='';
     (d.users||[]).forEach(u=>{
@@ -3177,6 +3138,21 @@ function inspectNewAccounts(){
   status('Yeni hesaplar inceleniyor...');
   $.post('/api/inspect/new-accounts',{},function(d){
     status('✅ '+d.count+' hesap incelendi',4000); loadUsers();
+  });
+}
+
+function ollamaAnalyzeAll(){
+  if(!confirm('Tüm kullanıcılar için Ollama analizi başlatılsın mı? Bu işlem uzun sürebilir.')) return;
+  var btn = $('#ollama-all-btn');
+  btn.prop('disabled',true).text('⏳ Çalışıyor...');
+  status('🤖 Ollama analizi başlatıldı, lütfen bekleyin...');
+  $.post('/api/analyze/ollama-all',{},function(d){
+    btn.prop('disabled',false).text('🤖 Ollama ile Analiz');
+    status('✅ '+d.analyzed+' kullanıcı için Ollama analizi tamamlandı',6000);
+    loadUsers();
+  }).fail(function(){
+    btn.prop('disabled',false).text('🤖 Ollama ile Analiz');
+    status('❌ Ollama analiz hatası',4000);
   });
 }
 
@@ -3740,11 +3716,17 @@ def create_app():
     def api_users():
         p=int(request.args.get("page",1)); sz=int(request.args.get("size",50))
         flt=request.args.get("filter",""); thr=request.args.get("threat","")
+        sort_col=request.args.get("sort_col","threat_score")
+        sort_dir=request.args.get("sort_dir","desc")
+        _ALLOWED={"author","msg_count","threat_level","threat_score",
+                  "bot_prob","hate_score","antisemitism_score","stalker_score","hmm_state"}
+        if sort_col not in _ALLOWED: sort_col="threat_score"
+        if sort_dir not in ("asc","desc"): sort_dir="desc"
         off=(p-1)*sz; wh="WHERE 1=1"; prms=[]
         if flt: wh+=" AND author LIKE ?"; prms.append(f"%{flt}%")
         if thr: wh+=" AND threat_level=?"; prms.append(thr)
         tot=(db_exec(f"SELECT COUNT(*) c FROM user_profiles {wh}",tuple(prms),fetch="one") or {}).get("c",0)
-        rows=db_exec(f"SELECT * FROM user_profiles {wh} ORDER BY threat_score DESC LIMIT ? OFFSET ?",
+        rows=db_exec(f"SELECT * FROM user_profiles {wh} ORDER BY {sort_col} {sort_dir.upper()} LIMIT ? OFFSET ?",
                      tuple(prms)+(sz,off),fetch="all") or []
         return jsonify({"users":[dict(r) for r in rows],"total":tot})
 
@@ -3832,8 +3814,20 @@ def create_app():
     @app.route("/api/analyze/all", methods=["POST"])
     def api_analyze_all():
         rows=db_exec("SELECT DISTINCT author FROM messages WHERE deleted=0",fetch="all") or []
-        authors = [r["author"] for r in rows if r.get("author")]
-        n = analyze_users_parallel(authors)
+        n=0
+        for r in rows:
+            try: analyze_user(r["author"], run_ollama=False); n+=1
+            except: pass
+        _qtable.save()
+        return jsonify({"analyzed":n})
+
+    @app.route("/api/analyze/ollama-all", methods=["POST"])
+    def api_analyze_ollama_all():
+        rows=db_exec("SELECT DISTINCT author FROM user_profiles",fetch="all") or []
+        n=0
+        for r in rows:
+            try: analyze_user(r["author"], run_ollama=True); n+=1
+            except: pass
         _qtable.save()
         return jsonify({"analyzed":n})
 
@@ -4073,10 +4067,15 @@ def create_app():
             if rows: fit_tfidf([r["message"] for r in rows])
             # ── BUG FIX: Scrape sonrası kullanıcı profillerini otomatik analiz et ──
             # Önceden user_profiles boş kalıyordu → tüm istatistikler 0 görünüyordu
+            analyzed = 0
             authors_rows = db_exec(
                 "SELECT DISTINCT author FROM messages WHERE deleted=0", fetch="all") or []
-            authors = [r["author"] for r in authors_rows if r.get("author")]
-            analyzed = analyze_users_parallel(authors)
+            for ar in authors_rows:
+                try:
+                    analyze_user(ar["author"], run_ollama=False)
+                    analyzed += 1
+                except Exception as e:
+                    log.debug("Otomatik analiz @%s: %s", ar["author"], e)
             _qtable.save()
             log.info("✅ Scrape sonrası %d kullanıcı otomatik analiz edildi", analyzed)
             # Konu modeli (yeterli veri varsa)
@@ -4261,18 +4260,20 @@ def main():
         total=full_scrape()
         log.info("✅ %d mesaj çekildi", total)
         rows=db_exec("SELECT DISTINCT author FROM messages WHERE deleted=0",fetch="all") or []
-        authors = [r["author"] for r in rows if r.get("author")]
-        analyzed = analyze_users_parallel(authors)
+        for r in rows:
+            try: analyze_user(r["author"], run_ollama=False)
+            except Exception as e: log.warning("@%s analiz hatası: %s",r["author"],e)
         _qtable.save()
-        log.info("✅ Analiz tamamlandı (%d kullanıcı)", analyzed)
+        log.info("✅ Analiz tamamlandı")
         return
 
     if args.analyze_all:
         rows=db_exec("SELECT DISTINCT author FROM messages WHERE deleted=0",fetch="all") or []
-        authors = [r["author"] for r in rows if r.get("author")]
-        analyzed = analyze_users_parallel(authors)
+        for r in rows:
+            try: analyze_user(r["author"], run_ollama=False)
+            except: pass
         _qtable.save()
-        log.info("✅ Tüm kullanıcı analizi tamamlandı (%d kullanıcı)", analyzed)
+        log.info("✅ Tüm kullanıcı analizi tamamlandı")
         return
 
     if not _FLASK:
